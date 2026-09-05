@@ -21,6 +21,7 @@
     background: var(--panel);
   }
   h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  .head-right { display: flex; align-items: center; gap: 14px; }
   #refresh-info { color: var(--muted); font-size: 12px; }
   main { max-width: 1100px; margin: 0 auto; padding: 24px; }
   .card {
@@ -28,12 +29,14 @@
     border-radius: 10px; padding: 16px; margin-bottom: 20px;
   }
   .card h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; }
-  input[type=text] {
-    flex: 1; min-width: 220px; background: var(--bg);
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  input[type=text], input[type=password], select {
+    background: var(--bg);
     border: 1px solid var(--border); color: var(--text);
     border-radius: 8px; padding: 9px 12px; font-size: 14px;
   }
+  input[type=text], input[type=password] { flex: 1; min-width: 220px; }
+  select { min-width: 220px; }
   button {
     background: var(--accent); color: #fff; border: 0; cursor: pointer;
     border-radius: 8px; padding: 9px 16px; font-size: 14px; font-weight: 500;
@@ -54,6 +57,11 @@
   .muted { color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .servers-bar { margin-bottom: 12px; }
+  .servers-bar .row { gap: 8px; }
+  .servers-bar select { min-width: 260px; }
+  .server-tag { font-size: 12px; color: var(--muted); padding: 2px 9px; border: 1px solid var(--border); border-radius: 20px; }
+  .server-tag.connected { color: var(--ok); border-color: rgba(52,199,123,.4); }
   #toast {
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -68,24 +76,44 @@
   .modal-back.show { display: flex; }
   .modal {
     background: var(--panel); border: 1px solid var(--border);
-    border-radius: 12px; padding: 20px; max-width: 420px; width: calc(100% - 40px);
+    border-radius: 12px; padding: 20px; max-width: 440px; width: calc(100% - 40px);
   }
   .modal h3 { margin: 0 0 12px; }
+  .modal label { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
   .modal pre {
     background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 12px; font-size: 11px; overflow: auto; max-height: 240px; margin: 0 0 12px;
   }
   .modal img { max-width: 100%; display: block; margin: 0 auto 12px; border-radius: 8px; }
-  .modal .row { margin-top: 4px; }
+  .modal .row { margin-top: 12px; }
+  .server-list { list-style: none; margin: 0 0 4px; padding: 0; }
+  .server-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .server-list li:last-child { border-bottom: 0; }
 </style>
 </head>
 <body>
 <header>
   <h1>AWG Panel</h1>
-  <span id="refresh-info">Обновлено: …</span>
+  <div class="head-right">
+    <span id="refresh-info">Обновлено: …</span>
+  </div>
 </header>
 
 <main>
+  <div class="card">
+    <h2>Сервер</h2>
+    <div class="servers-bar">
+      <div class="row">
+        <select id="server-select">
+          <option value="local">Локальный сервер</option>
+        </select>
+        <span id="server-status" class="server-tag">—</span>
+        <button id="ping-btn" class="secondary sm" style="padding:8px 12px">Проверить</button>
+        <button id="servers-btn" class="secondary sm" style="padding:8px 12px">Управлять серверами</button>
+      </div>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Новый клиент</h2>
     <div class="row">
@@ -121,10 +149,35 @@
   </div>
 </div>
 
+<div class="modal-back" id="servers-back">
+  <div class="modal" style="max-width:520px">
+    <h3>Серверы</h3>
+    <ul class="server-list" id="server-list"></ul>
+    <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:12px">
+      <label>Имя сервера</label>
+      <input type="text" id="sv-name" placeholder="Например: VPS-2">
+      <label>URL агента</label>
+      <input type="text" id="sv-url" placeholder="http://91.107.126.173:5183">
+      <label>Токен (X-Api-Key)</label>
+      <input type="password" id="sv-token" placeholder="токен агента">
+      <div class="row">
+        <button id="sv-test" class="secondary" style="flex:1">Тест подключения</button>
+        <button id="sv-add">Добавить</button>
+      </div>
+    </div>
+    <div class="row">
+      <button id="servers-close" class="secondary" style="flex:1;margin-top:12px">Закрыть</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = (s) => document.querySelector(s);
 
 let clients = [];
+let servers = [];
+let currentServer = "local";
+let serverTestResult = null;
 
 function toast(msg, isError) {
   const el = $("#toast");
@@ -158,6 +211,8 @@ function esc(s) {
   return (s || "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+function q(s) { return encodeURIComponent(s); }
+
 async function api(method, url, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
@@ -170,13 +225,72 @@ async function api(method, url, body) {
   return data;
 }
 
+async function loadServers() {
+  try {
+    servers = await api("GET", "/api/servers");
+    const sel = $("#server-select");
+    const prev = currentServer;
+    sel.innerHTML = "";
+    for (const s of servers) {
+      const opt = document.createElement("option");
+      opt.value = s.id;
+      opt.textContent = s.name + (s.is_local ? " (этот)" : "");
+      sel.appendChild(opt);
+    }
+    if (servers.some(s => s.id === prev)) { sel.value = prev; currentServer = prev; }
+    else { currentServer = servers.length ? servers[0].id : "local"; sel.value = currentServer; }
+    renderServerList();
+  } catch (e) {
+    toast("Не удалось загрузить серверы: " + e.message, true);
+  }
+}
+
+function renderServerList() {
+  const ul = $("#server-list");
+  ul.innerHTML = "";
+  for (const s of servers) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <span><strong>${esc(s.name)}</strong><br><span class="muted mono">${esc(s.url) || "локальный"}</span></span>
+      ${s.is_local ? '<span class="muted">—</span>' : '<button class="sm danger" onclick="removeServer(\'' + q(s.id) + '\')">Удалить</button>'}`;
+    ul.appendChild(li);
+  }
+}
+
+async function removeServer(id) {
+  if (!confirm("Удалить сервер из панели?")) return;
+  try {
+    await api("DELETE", "/api/servers/" + q(id));
+    if (currentServer === id) currentServer = "local";
+    await loadServers();
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function pingCurrent() {
+  if (!currentServer) return;
+  try {
+    const r = await api("POST", "/api/servers/" + q(currentServer) + "/ping");
+    const tag = $("#server-status");
+    tag.textContent = r.ok ? "соединение OK" + (r.interface ? " · " + r.interface : "") : "ошибка";
+    tag.className = "server-tag " + (r.ok ? "connected" : "");
+  } catch (e) {
+    const tag = $("#server-status");
+    tag.textContent = "недоступен";
+    tag.className = "server-tag";
+  }
+}
+
 async function refresh() {
   try {
-    clients = await api("GET", "/api/clients");
+    clients = await api("GET", "/api/clients?server=" + q(currentServer));
     render();
     $("#refresh-info").textContent = "Обновлено: " + new Date().toLocaleTimeString();
   } catch (e) {
     $("#refresh-info").textContent = "Ошибка: " + e.message;
+    $("#clients").innerHTML = "";
+    $("#empty").style.display = "block";
+    $("#empty").textContent = "Не удалось загрузить клиентов: " + e.message;
   }
 }
 
@@ -205,14 +319,58 @@ function render() {
   }
 }
 
+$("#server-select").addEventListener("change", () => {
+  currentServer = $("#server-select").value;
+  pingCurrent();
+  refresh();
+});
+
+$("#ping-btn").addEventListener("click", pingCurrent);
+
+$("#servers-btn").addEventListener("click", () => {
+  renderServerList();
+  serverTestResult = null;
+  $("#servers-back").classList.add("show");
+});
+
+$("#servers-close").addEventListener("click", () => $("#servers-back").classList.remove("show"));
+$("#servers-back").addEventListener("click", (e) => { if (e.target === $("#servers-back")) $("#servers-back").classList.remove("show"); });
+
+$("#sv-test").addEventListener("click", async () => {
+  const url = $("#sv-url").value.trim();
+  const token = $("#sv-token").value.trim();
+  if (!url || !token) { toast("Укажите URL и токен", true); return; }
+  try {
+    const r = await api("POST", "/api/servers/probe/ping", { url, token });
+    toast(r.ok ? "Агент отвечает (AWG найден)" : "Агент отвечает, но AWG не найден", !r.ok);
+  } catch (e) { toast(e.message, true); }
+});
+
+function isUrl(u) { return /^https?:\/\//.test(u); }
+
+$("#sv-add").addEventListener("click", async () => {
+  const name = $("#sv-name").value.trim();
+  let url = $("#sv-url").value.trim();
+  const token = $("#sv-token").value.trim();
+  if (!name || !url || !token) { toast("Заполните все поля", true); return; }
+  try {
+    await api("POST", "/api/servers", { name, url, token });
+    $("#sv-name").value = ""; $("#sv-url").value = ""; $("#sv-token").value = "";
+    await loadServers();
+    toast("Сервер добавлен");
+    $("#servers-back").classList.remove("show");
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+});
+
 $("#add-btn").addEventListener("click", async () => {
   const name = $("#name").value.trim();
   if (!name) { toast("Введите имя клиента", true); return; }
   try {
-    const c = await api("POST", "/api/clients", { name });
+    const c = await api("POST", "/api/clients?server=" + q(currentServer), { name });
     $("#name").value = "";
     openQR(c.name, c.qr, c.config);
-    toast("Клиент «" + c.name + "» создан");
+    toast("Клиент «" + c.name + "» создан на " + currentServer);
     await refresh();
   } catch (e) { toast(e.message, true); }
 });
@@ -221,20 +379,20 @@ $("#name").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#add-b
 
 async function toggle(name, enabled) {
   try {
-    await api("PATCH", "/api/clients/" + encodeURIComponent(name), { enabled });
+    await api("PATCH", "/api/clients/" + q(name) + "?server=" + q(currentServer), { enabled });
     toast("Клиент «" + name + "» " + (enabled ? "включён" : "отключён"));
     await refresh();
   } catch (e) { toast(e.message, true); }
 }
 
 function download(name) {
-  window.location = "/api/clients/" + encodeURIComponent(name) + "/config";
+  window.location = "/api/clients/" + q(name) + "/config?server=" + q(currentServer);
 }
 
 async function del(name) {
   if (!confirm("Удалить клиента «" + name + "»? Он потеряет доступ.")) return;
   try {
-    await api("DELETE", "/api/clients/" + encodeURIComponent(name));
+    await api("DELETE", "/api/clients/" + q(name) + "?server=" + q(currentServer));
     toast("Клиент «" + name + "» удалён");
     await refresh();
   } catch (e) { toast(e.message, true); }
@@ -242,7 +400,7 @@ async function del(name) {
 
 async function showQR(name) {
   try {
-    const d = await api("GET", "/api/clients/" + encodeURIComponent(name) + "/qr");
+    const d = await api("GET", "/api/clients/" + q(name) + "/qr?server=" + q(currentServer));
     openQR(name, d.qr);
   } catch (e) { toast(e.message, true); }
 }
@@ -250,18 +408,21 @@ async function showQR(name) {
 function openQR(name, qr, config) {
   $("#qr-title").textContent = "Клиент: " + name;
   $("#qr-img").src = "data:image/png;base64," + qr;
-  $("#qr-download").href = "/api/clients/" + encodeURIComponent(name) + "/config";
+  $("#qr-download").href = "/api/clients/" + q(name) + "/config?server=" + q(currentServer);
   $("#qr-back").classList.add("show");
-  if (config) {
-    $("#qr-download").dataset.config = config;
-  }
 }
 
 $("#qr-close").addEventListener("click", () => $("#qr-back").classList.remove("show"));
 $("#qr-back").addEventListener("click", (e) => { if (e.target === $("#qr-back")) $("#qr-back").classList.remove("show"); });
 
-refresh();
-setInterval(refresh, 10000);
+loadServers().then(() => {
+  pingCurrent();
+  refresh();
+});
+setInterval(() => {
+  pingCurrent();
+  refresh();
+}, 10000);
 </script>
 </body>
 </html>
