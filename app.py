@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import base64
+import asyncio
 import hmac
 import logging
 import os
 import secrets
 import socket
 import threading
+import time
 import uuid
 from typing import Dict, List, Optional
 
@@ -93,6 +95,54 @@ async def agent_request(method: str, server: Dict, path: str, body=None, timeout
         detail = data.get("detail") or data if data else f"HTTP {resp.status_code}"
         raise HTTPException(status_code=resp.status_code, detail=str(detail))
     return data
+
+
+def agent_request_sync(method: str, server: Dict, path: str, body=None, timeout=900.0):
+    url = server["url"].rstrip("/") + path
+    headers = {"X-Api-Key": server.get("token", "")}
+    kwargs = {"headers": headers, "timeout": timeout}
+    if body is not None:
+        kwargs["json"] = body
+    try:
+        with httpx.Client() as client:
+            resp = client.request(method, url, **kwargs)
+    except httpx.HTTPError as e:
+        raise RuntimeError(f"Agent unreachable: {e}")
+    try:
+        data = resp.json()
+    except ValueError:
+        data = {}
+    if resp.status_code >= 400:
+        raise RuntimeError(str(data.get("detail") or data or f"HTTP {resp.status_code}"))
+    return data
+
+
+async def _agent_retry(method: str, server: Dict, path: str, body=None, timeout=15.0, attempts=3):
+    """agent_request with a few retries: the path to remote VDS occasionally
+    drops packets, so a short retry makes AWG operations resilient."""
+    last = None
+    for i in range(attempts):
+        try:
+            return await agent_request(method, server, path, body=body, timeout=timeout)
+        except HTTPException as e:
+            last = e
+            if e.status_code not in (502, 504):
+                raise
+            await asyncio.sleep(1.0 * (i + 1))
+    raise HTTPException(status_code=502, detail=f"Agent unreachable after {attempts} attempts")
+
+
+def _agent_retry_sync(method: str, server: Dict, path: str, body=None, timeout=900.0, attempts=3):
+    last = None
+    for i in range(attempts):
+        try:
+            return agent_request_sync(method, server, path, body=body, timeout=timeout)
+        except RuntimeError as e:
+            last = e
+            if "unreachable" not in str(e):
+                raise
+            time.sleep(1.0 * (i + 1))
+    raise last or RuntimeError("Agent unreachable")
 
 
 # ----------------------------------------------------------------------
@@ -275,6 +325,93 @@ def deploy_status(did: str):
     d = deployments.get(did)
     if not d:
         raise HTTPException(status_code=404, detail="Deployment not found")
+    return d
+
+
+# ----------------------------------------------------------------------
+# AmneziaWG package management
+# ----------------------------------------------------------------------
+
+awg_tasks: Dict[str, Dict] = {}
+
+
+@app.get("/api/awg/status")
+async def awg_status(server: str = "local", refresh: int = 0):
+    s = find_server(server)
+    if not s:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if server == "local":
+        try:
+            return core.awg_apt_state(update=bool(refresh))
+        except Exception as e:
+            return {"error": str(e), "installed": core.awg_bin_present()}
+    # Remote: the agent maintains apt state itself (apt-get update runs in the
+    # background on the agent). refresh only kicks the agent's refresher and the
+    # status endpoint returns the cached result, keeping responses small/stable.
+    if refresh:
+        await _agent_retry("GET", s, "/api/awg/refresh", timeout=15)
+    return await _agent_retry("GET", s, "/api/awg/status", timeout=15)
+
+
+def _awg_update_task(tid: str, server_id: str, action: str):
+    d = awg_tasks[tid]
+    try:
+        if server_id == "local":
+            steps: list = []
+            if action == "install":
+                result = core.awg_install(steps=steps)
+            else:
+                result = core.awg_upgrade(steps=steps)
+            d["steps"] = steps[-8:]
+            d["result"] = result
+        else:
+            s = find_server(server_id)
+            if not s:
+                raise RuntimeError("Server not found")
+            data = _agent_retry_sync("POST", s, f"/api/awg/update?action={action}", timeout=30)
+            sub_id = data.get("id")
+            if not sub_id:
+                raise RuntimeError(data.get("error") or "agent did not start a task")
+            deadline = time.monotonic() + 2400
+            while time.monotonic() < deadline:
+                sub = _agent_retry_sync("GET", s, f"/api/awg/update/{sub_id}", timeout=30)
+                if sub.get("steps"):
+                    d["steps"] = sub["steps"][-8:]
+                if sub.get("status") in ("done", "error"):
+                    d["steps"] = (sub.get("steps") or [])[-8:]
+                    d["result"] = sub.get("result")
+                    if sub.get("status") == "error":
+                        raise RuntimeError(sub.get("error") or "агент вернул ошибку")
+                    break
+                time.sleep(3)
+            else:
+                raise RuntimeError("превышено время ожидания задачи на агенте")
+        d["status"] = "done"
+    except Exception as e:
+        d["steps"].append({"msg": f"Ошибка: {e}", "ok": False})
+        d["status"] = "error"
+        d["error"] = str(e)
+        logger.exception("awg task %s failed", tid)
+
+
+@app.post("/api/awg/update", status_code=202)
+def start_awg_update(server: str = "local", action: str = "upgrade"):
+    if action not in ("upgrade", "install"):
+        raise HTTPException(status_code=400, detail="action must be 'upgrade' or 'install'")
+    if not find_server(server):
+        raise HTTPException(status_code=404, detail="Server not found")
+    tid = uuid.uuid4().hex
+    awg_tasks[tid] = {"id": tid, "status": "running", "steps": [], "result": None,
+                      "error": None, "action": action, "server": server}
+    threading.Thread(target=_awg_update_task, args=(tid, server, action), daemon=True).start()
+    return {"id": tid}
+
+
+@app.get("/api/awg/update/{tid}")
+def awg_update_status(tid: str):
+    d = awg_tasks.get(tid)
+    if not d:
+        raise HTTPException(status_code=404, detail="Task not found")
     return d
 
 

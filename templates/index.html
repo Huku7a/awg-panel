@@ -54,6 +54,7 @@
   .badge.ok { background: rgba(52,199,123,.15); color: var(--ok); }
   .badge.off { background: rgba(255,91,106,.12); color: var(--off); }
   .badge.dis { background: rgba(139,147,167,.15); color: var(--muted); }
+  .badge.warn { background: rgba(255,180,84,.15); color: var(--warn); }
   .muted { color: var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -77,6 +78,7 @@
   .modal {
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 12px; padding: 20px; max-width: 440px; width: calc(100% - 40px);
+    max-height: calc(100vh - 48px); overflow-y: auto;
   }
   .modal h3 { margin: 0 0 12px; }
   .modal label { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
@@ -97,6 +99,26 @@
   .steps .dot-run { color: var(--warn); }
   .hint { font-size: 11px; color: var(--muted); }
   .divider { border-top: 1px solid var(--border); margin: 14px 0 10px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 12px 0 14px; }
+  .tab {
+    background: transparent; border: 0; border-bottom: 2px solid transparent;
+    color: var(--muted); padding: 8px 12px; border-radius: 0; font-size: 13px;
+  }
+  .tab:hover { filter: none; color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text); }
+  th .arr { color: var(--accent); font-size: 10px; margin-left: 4px; }
+  .search-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  #client-search { max-width: 340px; min-width: 200px; }
+  .awg-status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+  .awg-status.error { color: var(--off); }
+  .awg-status.done { color: var(--ok); }
+  .awg-status.done .spin, .awg-status.error .spin { display: none; }
+  .spin { width: 12px; height: 12px; flex: none; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -132,10 +154,19 @@
 
   <div class="card">
     <h2>Клиенты</h2>
+    <div class="search-row">
+      <input type="text" id="client-search" placeholder="Поиск: имя, IP, endpoint…">
+      <span id="client-count" class="muted"></span>
+    </div>
     <table>
       <thead>
         <tr>
-          <th>Имя</th><th>IPv4</th><th>Статус</th><th>Подключение</th><th>Rx / Tx</th><th>Действия</th>
+          <th class="sortable" data-sort="name">Имя<span class="arr"></span></th>
+          <th class="sortable" data-sort="ipv4">IPv4<span class="arr"></span></th>
+          <th class="sortable" data-sort="status">Статус<span class="arr"></span></th>
+          <th class="sortable" data-sort="endpoint">Подключение<span class="arr"></span></th>
+          <th class="sortable" data-sort="rx">Rx / Tx<span class="arr"></span></th>
+          <th>Действия</th>
         </tr>
       </thead>
       <tbody id="clients"></tbody>
@@ -158,39 +189,61 @@
 </div>
 
 <div class="modal-back" id="servers-back">
-  <div class="modal" style="max-width:520px">
-    <h3>Серверы</h3>
-    <ul class="server-list" id="server-list"></ul>
-    <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:12px">
-      <label>Имя сервера</label>
-      <input type="text" id="sv-name" placeholder="Например: VPS-2">
-      <label>URL агента</label>
-      <input type="text" id="sv-url" placeholder="http://91.107.126.173:5183">
-      <label>Токен (X-Api-Key)</label>
-      <input type="password" id="sv-token" placeholder="токен агента">
-      <div class="row">
-        <button id="sv-test" class="secondary" style="flex:1">Тест подключения</button>
-        <button id="sv-add">Добавить</button>
+  <div class="modal" style="max-width:620px">
+    <div class="row" style="justify-content:space-between;margin-top:0">
+      <h3 style="margin:0">Серверы</h3>
+      <button id="servers-close" class="secondary sm">Закрыть</button>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="tab-servers">Серверы</button>
+      <button class="tab" data-tab="tab-deploy">Развернуть агент</button>
+      <button class="tab" data-tab="tab-awg">AmneziaWG</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-servers">
+      <ul class="server-list" id="server-list"></ul>
+      <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:12px">
+        <label>Имя сервера</label>
+        <input type="text" id="sv-name" placeholder="Например: VPS-2">
+        <label>URL агента</label>
+        <input type="text" id="sv-url" placeholder="http://91.107.126.173:5183">
+        <label>Токен (X-Api-Key)</label>
+        <input type="password" id="sv-token" placeholder="токен агента">
+        <div class="row">
+          <button id="sv-test" class="secondary" style="flex:1">Тест подключения</button>
+          <button id="sv-add">Добавить</button>
+        </div>
       </div>
     </div>
-    <div class="divider"></div>
-    <h4>Развернуть агент на новый VDS</h4>
-    <p class="hint">Панель сама подключится по SSH, скопирует код, установит агент (порт 5183, UFW откроется только для панели) и добавит сервер в список.</p>
-    <div class="row">
-      <input type="text" id="dp-name" placeholder="Имя сервера (например, VPS-3)">
-      <input type="text" id="dp-host" placeholder="Хост VDS (IP или домен)">
+
+    <div class="tab-panel" id="tab-deploy">
+      <h4>Развернуть агент на новый VDS</h4>
+      <p class="hint">Панель сама подключится по SSH, скопирует код, установит агент (порт 5183, UFW откроется только для панели) и добавит сервер в список.</p>
+      <div class="row">
+        <input type="text" id="dp-name" placeholder="Имя сервера (например, VPS-3)">
+        <input type="text" id="dp-host" placeholder="Хост VDS (IP или домен)">
+      </div>
+      <div class="row">
+        <input type="text" id="dp-user" value="root" style="min-width:100px;flex:0">
+        <input type="text" id="dp-port" value="22" style="min-width:70px;flex:0">
+        <input type="password" id="dp-password" placeholder="SSH пароль root">
+      </div>
+      <div class="row">
+        <button id="dp-start" class="ok" style="flex:1">Развернуть агент</button>
+      </div>
+      <ul id="dp-steps" class="steps"></ul>
     </div>
-    <div class="row">
-      <input type="text" id="dp-user" value="root" style="min-width:100px;flex:0">
-      <input type="text" id="dp-port" value="22" style="min-width:70px;flex:0">
-      <input type="password" id="dp-password" placeholder="SSH пароль root">
-    </div>
-    <div class="row">
-      <button id="dp-start" class="ok" style="flex:1">Развернуть агент</button>
-    </div>
-    <ul id="dp-steps" class="steps"></ul>
-    <div class="row">
-      <button id="servers-close" class="secondary" style="flex:1;margin-top:12px">Закрыть</button>
+
+    <div class="tab-panel" id="tab-awg">
+      <h4>AmneziaWG на сервере</h4>
+      <p class="hint">Проверка/установка/обновление пакетов amneziawg (официальный PPA amnezia/ppa). На удалённых серверах индексы пакетов агент обновляет сам в фоне; кнопка проверки лишь запускает внеочередную проверку. При обновлении конфигурация бэкапится, активные сессии не прерываются.</p>
+      <div id="awg-box" class="muted">Загрузка…</div>
+      <div class="row">
+        <button id="awg-refresh" class="secondary">Проверить обновления</button>
+        <button id="awg-act" class="ok" style="flex:1;display:none">Обновить AmneziaWG</button>
+      </div>
+      <div id="awg-upd" class="awg-status" style="display:none"><span class="spin"></span><span id="awg-upd-text"></span></div>
+      <ul id="awg-steps" class="steps"></ul>
     </div>
   </div>
 </div>
@@ -202,6 +255,9 @@ let clients = [];
 let servers = [];
 let currentServer = "local";
 let serverTestResult = null;
+let searchQ = "";
+let sortKey = "name";
+let sortDir = 1;
 
 function toast(msg, isError) {
   const el = $("#toast");
@@ -318,12 +374,44 @@ async function refresh() {
   }
 }
 
+function sortVal(c, k) {
+  switch (k) {
+    case "name": return (c.name || "").toLowerCase();
+    case "ipv4": return c.ipv4 || "";
+    case "status": return c.enabled ? (c.online ? 2 : 1) : 0;
+    case "endpoint": return c.enabled ? (c.endpoint || "").toLowerCase() : "";
+    case "rx": return c.rx || 0;
+    default: return "";
+  }
+}
+
+function displayList() {
+  const q = searchQ.toLowerCase();
+  const list = clients.filter(c =>
+    !q ||
+    (c.name || "").toLowerCase().includes(q) ||
+    (c.ipv4 || "").toLowerCase().includes(q) ||
+    (c.endpoint || "").toLowerCase().includes(q)
+  );
+  list.sort((a, b) => {
+    const va = sortVal(a, sortKey), vb = sortVal(b, sortKey);
+    const r = (typeof va === "number" && typeof vb === "number") ? va - vb : String(va).localeCompare(String(vb));
+    return r * sortDir;
+  });
+  return list;
+}
+
 function render() {
+  const list = displayList();
+  document.querySelectorAll("th.sortable").forEach(th => {
+    th.querySelector(".arr").textContent = th.dataset.sort === sortKey ? (sortDir > 0 ? "▲" : "▼") : "";
+  });
+  $("#client-count").textContent = searchQ ? (list.length + " из " + clients.length) : String(clients.length);
   const tbody = $("#clients");
   tbody.innerHTML = "";
-  $("#empty").style.display = clients.length ? "none" : "block";
-  $("#empty").textContent = clients.length ? "" : "Нет клиентов. Добавьте первого клиента.";
-  for (const c of clients) {
+  $("#empty").style.display = list.length ? "none" : "block";
+  $("#empty").textContent = searchQ ? "Ничего не найдено." : (clients.length ? "" : "Нет клиентов. Добавьте первого клиента.");
+  for (const c of list) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><strong>${esc(c.name)}</strong></td>
@@ -343,6 +431,15 @@ function render() {
   }
 }
 
+document.querySelectorAll("th.sortable").forEach(th => {
+  th.addEventListener("click", () => {
+    if (sortKey === th.dataset.sort) sortDir = -sortDir;
+    else { sortKey = th.dataset.sort; sortDir = 1; }
+    render();
+  });
+});
+$("#client-search").addEventListener("input", (e) => { searchQ = e.target.value.trim(); render(); });
+
 $("#server-select").addEventListener("change", () => {
   currentServer = $("#server-select").value;
   pingCurrent();
@@ -351,10 +448,21 @@ $("#server-select").addEventListener("change", () => {
 
 $("#ping-btn").addEventListener("click", pingCurrent);
 
+function showTab(name) {
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === name));
+}
+
+document.querySelectorAll(".tab").forEach(btn => {
+  btn.addEventListener("click", () => showTab(btn.dataset.tab));
+});
+
 $("#servers-btn").addEventListener("click", () => {
   renderServerList();
   serverTestResult = null;
+  showTab("tab-servers");
   $("#servers-back").classList.add("show");
+  loadAwgStatus(false);
 });
 
 $("#servers-close").addEventListener("click", () => $("#servers-back").classList.remove("show"));
@@ -387,10 +495,9 @@ $("#sv-add").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
-function renderDeploySteps(steps) {
-  const ul = $("#dp-steps");
+function renderSteps(ul, steps) {
   ul.innerHTML = "";
-  steps.forEach((s, i) => {
+  (steps || []).forEach((s) => {
     const li = document.createElement("li");
     const icon = s.ok ? '<span class="dot-ok">&#10003;</span>' : '<span class="dot-err">&#10007;</span>';
     li.innerHTML = icon + '<span>' + esc(s.msg) + '</span>';
@@ -398,10 +505,130 @@ function renderDeploySteps(steps) {
   });
 }
 
+async function loadAwgStatus(refresh) {
+  const box = $("#awg-box");
+  const act = $("#awg-act");
+  try {
+    const s = await api("GET", "/api/awg/status?server=" + q(currentServer) + "&refresh=" + (refresh ? 1 : 0));
+    if (s.error) { box.innerHTML = '<span class="muted">' + esc(s.error) + '</span>'; act.style.display = "none"; return; }
+    let html = "";
+    if (s.installed) {
+      html += 'Установлен: <b>' + esc(s.version || "?") + '</b><br>';
+      for (const p of s.packages) {
+        html += '<span class="mono muted">' + esc(p.package) + '</span>: ' +
+          (p.installed ? '<b>' + esc(p.installed) + '</b>' : '<span class="muted">—</span>') +
+          (p.candidate && p.candidate !== p.installed ? ' &rarr; ' + '<span class="mono">' + esc(p.candidate) + '</span>' : '') + '<br>';
+      }
+      html += s.upgradable ? '<span class="badge warn">доступно обновление</span>' : '<span class="badge ok">актуальная версия</span>';
+      awgAction = s.upgradable ? "upgrade" : null;
+      act.textContent = "Обновить AmneziaWG";
+      act.style.display = s.upgradable ? "" : "none";
+    } else {
+      html = '<span class="muted">AmneziaWG не установлен.</span><br>';
+      if (s.repo_configured) {
+        for (const p of s.packages)
+          html += '<span class="mono muted">' + esc(p.package) + ': кандидат ' + esc(p.candidate || "-") + '</span><br>';
+      } else {
+        html += '<span class="muted">PPA amnezia/ppa будет добавлен автоматически при установке.</span><br>';
+      }
+      awgAction = "install";
+      act.textContent = "Установить AmneziaWG";
+      act.style.display = "";
+    }
+    if (currentServer !== "local") {
+      const st = s.update_state;
+      const checked = s.checked_at ? fmtHs(new Date(s.checked_at).getTime() / 1000) : "—";
+      html += '<span class="muted">Индексы пакетов обновляет агент: ' +
+        (st === "ok" ? '<span class="badge ok">автопроверка ОК</span>' :
+         st === "error" ? '<span class="badge warn">ошибка проверки</span>' :
+         '<span class="badge off">проверка…</span>') +
+        ' · последняя проверка ' + esc(checked) + '</span><br>';
+    }
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = '<span class="muted">Не удалось получить статус: ' + esc(e.message) + '</span>';
+    act.style.display = "none";
+  }
+}
+
+let awgAction = null;
+let awgBusy = false;
+
+function setAwgBusy(on) {
+  awgBusy = on;
+  $("#awg-refresh").disabled = on;
+  $("#awg-act").disabled = on;
+}
+
+let updTimer = null, updStart = 0;
+
+function startUpdStatus(text) {
+  clearInterval(updTimer);
+  $("#awg-upd").style.display = "flex";
+  $("#awg-upd").classList.remove("done", "error");
+  $("#awg-upd-text").textContent = text;
+  updStart = Date.now();
+  updTimer = setInterval(() => {
+    $("#awg-upd-text").textContent = text + " — " + Math.round((Date.now() - updStart) / 1000) + " с";
+  }, 1000);
+}
+
+function endUpdStatus(text, ok) {
+  clearInterval(updTimer);
+  updTimer = null;
+  const el = $("#awg-upd");
+  el.classList.add(ok ? "done" : "error");
+  $("#awg-upd-text").textContent = text;
+}
+
+function pollAwgTask(id) {
+  api("GET", "/api/awg/update/" + q(id)).then(async (d) => {
+    renderSteps($("#awg-steps"), d.steps || []);
+    if (d.status === "done") {
+      endUpdStatus("Готово: AmneziaWG " + (d.action === "install" ? "установлен" : "обновлён"), true);
+      toast("AmneziaWG " + (d.action === "install" ? "установлен" : "обновлён"));
+      setAwgBusy(false);
+      await loadAwgStatus(false);
+      return;
+    }
+    if (d.status === "error") {
+      endUpdStatus("Ошибка: " + (d.error || "неизвестно"), false);
+      toast("Ошибка: " + (d.error || "неизвестно"), true);
+      setAwgBusy(false);
+      return;
+    }
+    $("#awg-upd-text").textContent = "Выполняется — " + Math.round((Date.now() - updStart) / 1000) + " с";
+    setTimeout(() => pollAwgTask(id), 3000);
+  }).catch((e) => {
+    endUpdStatus("Ошибка: " + e.message, false);
+    toast("Ошибка: " + e.message, true);
+    setAwgBusy(false);
+  });
+}
+
+$("#awg-refresh").addEventListener("click", () => loadAwgStatus(true));
+
+$("#awg-act").addEventListener("click", async () => {
+  if (!awgAction || awgBusy) return;
+  const what = awgAction === "install" ? "Установить" : "Обновить";
+  if (!confirm("Установить/обновить AmneziaWG на сервере? (конфигурация будет забэкаплена, процесс может занять несколько минут)")) return;
+  $("#awg-steps").innerHTML = "";
+  setAwgBusy(true);
+  startUpdStatus(what + " запущено…");
+  try {
+    const r = await api("POST", "/api/awg/update?server=" + q(currentServer) + "&action=" + awgAction, {});
+    pollAwgTask(r.id);
+  } catch (e) {
+    endUpdStatus("Ошибка запуска: " + e.message, false);
+    toast("Ошибка запуска: " + e.message, true);
+    setAwgBusy(false);
+  }
+});
+
 async function pollDeploy(id) {
   try {
     const d = await api("GET", "/api/deploy/" + q(id));
-    renderDeploySteps(d.steps || []);
+    renderSteps($("#dp-steps"), d.steps || []);
     if (d.status === "done") {
       toast("Агент развёрнут: " + d.result.url);
       await loadServers();

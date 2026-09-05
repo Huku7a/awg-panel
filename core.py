@@ -447,3 +447,117 @@ def op_client_config(name: str) -> Tuple[str, str]:
 def op_client_qr(name: str) -> str:
     _, conf = op_client_config(name)
     return qr_base64(conf)
+
+
+# ----------------------------------------------------------------------
+# AmneziaWG package management (apt / official PPA amnezia/ppa)
+# ----------------------------------------------------------------------
+
+AWG_PACKAGES = ("amneziawg", "amneziawg-tools", "amneziawg-dkms")
+_apt_lock = threading.Lock()
+
+
+def awg_bin_present() -> bool:
+    return shutil.which("awg") is not None
+
+
+def apt_policy(pkg: str) -> Dict:
+    r = run(f"apt-cache policy {pkg}")
+    inst = cand = None
+    for line in r.stdout.splitlines():
+        s = line.strip()
+        if s.startswith("Installed:"):
+            v = s.split(":", 1)[1].strip()
+            inst = v if v and v != "(none)" else None
+        elif s.startswith("Candidate:"):
+            v = s.split(":", 1)[1].strip()
+            cand = v if v and v != "(none)" else None
+    return {"package": pkg, "installed": inst, "candidate": cand}
+
+
+def awg_apt_state(update: bool = False) -> Dict:
+    update_ok = None
+    if update:
+        with _apt_lock:
+            r = run("apt-get update", timeout=300)
+        update_ok = r.returncode == 0
+    pkgs = [apt_policy(p) for p in AWG_PACKAGES]
+    installed_any = any(p["installed"] for p in pkgs)
+    candidate_any = any(p["candidate"] for p in pkgs)
+    upgradable = any(
+        p["installed"] and p["candidate"] and p["candidate"] != p["installed"]
+        for p in pkgs
+    )
+    version = None
+    if awg_bin_present():
+        r = run("awg version")
+        version = (r.stdout or r.stderr).strip() or "?"
+    return {
+        "installed": awg_bin_present(),
+        "version": version,
+        "repo_configured": candidate_any,
+        "upgradable": upgradable,
+        "update_run": update_ok,
+        "packages": pkgs,
+    }
+
+
+def _ppa_configured() -> bool:
+    r = run("grep -ris amnezia /etc/apt/sources.list /etc/apt/sources.list.d/ || true")
+    return "amnezia" in (r.stdout + r.stderr)
+
+
+def awg_install(steps: Optional[List[Dict]] = None) -> Dict:
+    def step(msg: str, ok: bool = True):
+        if steps is not None:
+            steps.append({"msg": msg, "ok": ok})
+        logger.info("awg install: %s", msg)
+
+    if awg_bin_present():
+        return {"installed": True, "changed": False, "message": "awg уже установлен"}
+    if config_path().exists():
+        backup_config()
+    with _apt_lock:
+        if not _ppa_configured():
+            step("Устанавливаю software-properties-common")
+            r = run("apt-get install -y software-properties-common", timeout=300)
+            if r.returncode != 0:
+                raise RuntimeError(f"software-properties-common: {r.stderr.strip()[-300:]}")
+            step("Добавляю официальный PPA amnezia/ppa")
+            r = run("add-apt-repository -y ppa:amnezia/ppa", timeout=300)
+            if r.returncode != 0:
+                raise RuntimeError(f"add-apt-repository: {r.stderr.strip()[-300:]}")
+        step("Обновляю индексы пакетов (apt-get update)")
+        r = run("apt-get update", timeout=300)
+        if r.returncode != 0:
+            raise RuntimeError(f"apt-get update: {r.stderr.strip()[-300:]}")
+        step("Устанавливаю amneziawg и amneziawg-tools")
+        r = run("apt-get install -y amneziawg amneziawg-tools", timeout=900)
+        if r.returncode != 0:
+            raise RuntimeError(f"apt install: {r.stderr.strip()[-300:]}")
+    step("AmneziaWG установлен")
+    return {"installed": True, "changed": True, "message": "OK"}
+
+
+def awg_upgrade(steps: Optional[List[Dict]] = None) -> Dict:
+    def step(msg: str, ok: bool = True):
+        if steps is not None:
+            steps.append({"msg": msg, "ok": ok})
+        logger.info("awg upgrade: %s", msg)
+
+    step("Резервное копирование конфигурации AWG")
+    if config_path().exists():
+        backup_config()
+        step("Конфигурация сохранена (*.bak)")
+    with _apt_lock:
+        step("Обновляю индексы пакетов (apt-get update)")
+        r = run("apt-get update", timeout=300)
+        if r.returncode != 0:
+            raise RuntimeError(f"apt-get update: {r.stderr.strip()[-300:]}")
+        step("Обновляю пакеты " + ", ".join(AWG_PACKAGES))
+        r = run("apt-get install --only-upgrade -y " + " ".join(AWG_PACKAGES), timeout=900)
+        if r.returncode != 0:
+            raise RuntimeError(f"apt upgrade: {r.stderr.strip()[-300:]}")
+    state = awg_apt_state(update=False)
+    step("AmneziaWG обновлён. Новый модуль ядра применится после перезагрузки сервера.")
+    return {"changed": True, "state": state}
