@@ -789,7 +789,6 @@ let lastResultShown = null;
 const updBtn = $("#update-btn");
 const updPop = $("#update-pop");
 
-function openUpdatePop() { renderUpdatePop(); updPop.classList.add("show"); }
 function closeUpdatePop() { updPop.classList.remove("show"); }
 $("#upd-later").addEventListener("click", closeUpdatePop);
 
@@ -842,10 +841,24 @@ async function loadUpdateStatus() {
   }
 }
 
-function renderUpdatePop() {
-  const s = updStatus || {};
+function renderSwapState(s) {
+  const stepsEl = $("#upd-steps");
+  stepsEl.innerHTML = "";
+  const steps = (s.active_steps || []).map(x => (x && x.msg) ? x.msg : String(x)).slice(-5);
+  for (const msg of steps) {
+    const li = document.createElement("li");
+    li.innerHTML = '<span class="dot-run">&#9679;</span><span>' + esc(msg) + '</span>';
+    stepsEl.appendChild(li);
+  }
+  if (s.progress && s.progress.text) {
+    const li = document.createElement("li");
+    li.innerHTML = '<span class="dot-run">&#9679;</span><span>' + esc(s.progress.text) + '</span>';
+    stepsEl.appendChild(li);
+  }
+}
+
+function renderUpdatePop(s) {
   $("#upd-cur").textContent = "v" + (s.version || "?");
-  $("#upd-steps").innerHTML = "";
   const running = s.busy || (s.last_result && s.last_result.status === "running");
   if (s.update_available) {
     $("#upd-next-line").style.display = "";
@@ -855,34 +868,92 @@ function renderUpdatePop() {
     $("#upd-notes").textContent = s.release_notes || "";
     $("#upd-go-row").style.display = "";
     $("#upd-go").textContent = "Обновить";
-    $("#upd-go").disabled = updBusy;
+    $("#upd-go").disabled = false;
     $("#upd-err").style.display = "none";
     $("#upd-ok").style.display = "none";
+  } else if (running) {
+    $("#upd-next-line").style.display = "none";
+    $("#upd-notes").style.display = "none";
+    $("#upd-date").textContent = "";
+    $("#upd-go-row").style.display = "none";
+    $("#upd-err").style.display = "none";
+    $("#upd-ok").style.display = "";
+    $("#upd-ok").textContent = "Обновление выполняется…";
+    renderSwapState(s);
   } else {
     $("#upd-next-line").style.display = "none";
     $("#upd-notes").style.display = "none";
     $("#upd-date").textContent = "";
-    if (running) {
-      $("#upd-go-row").style.display = "none";
-      $("#upd-ok").style.display = "";
-      $("#upd-ok").textContent = "Обновление выполняется…";
-      $("#upd-err").style.display = "none";
-    } else {
-      $("#upd-go-row").style.display = "";
-      $("#upd-go").textContent = "Проверить";
-      $("#upd-go").disabled = updBusy;
-      $("#upd-ok").style.display = s.error ? "none" : "";
-      $("#upd-ok").textContent = "Установлена последняя версия";
-      $("#upd-err").style.display = s.error ? "" : "none";
-      $("#upd-err").textContent = s.error || "";
-    }
+    $("#upd-go-row").style.display = "";
+    $("#upd-go").textContent = "Проверить";
+    $("#upd-go").disabled = false;
+    $("#upd-ok").style.display = s.error ? "none" : "";
+    $("#upd-ok").textContent = "Установлена последняя версия";
+    $("#upd-err").style.display = s.error ? "" : "none";
+    $("#upd-err").textContent = s.error || "";
   }
+}
+
+async function loadUpdateStatus() {
+  try {
+    const s = await api("GET", "/api/update/status");
+    updStatus = s;
+    renderUpdate(s);
+    renderUpdatePop(s);
+    maybeToastLastResult(s);
+  } catch (e) {
+    updStatus = { error: e.message, version: "?" };
+    updBtn.classList.add("error");
+    $("#update-btn-label").textContent = "Ошибка";
+  }
+}
+
+function renderUpdate(s) {
+  const label = $("#update-btn-label");
+  updBtn.classList.remove("avail", "error", "busy");
+  updBtn.disabled = false;
+  const running = s.last_result && s.last_result.status === "running";
+  if (s.busy || running) {
+    updBtn.classList.add("busy");
+    updBtn.disabled = true;
+    label.textContent = running ? "Обновление…" : "Проверка…";
+  } else if (s.update_available) {
+    updBtn.classList.add("avail");
+    label.textContent = "v" + s.latest;
+  } else if (s.error && s.state !== "no-release") {
+    updBtn.classList.add("error");
+    label.textContent = "Ошибка проверки";
+  } else {
+    label.textContent = "v" + s.version;
+  }
+}
+
+function maybeToastLastResult(s) {
+  if (!s.last_result) return;
+  const key = s.last_result.status + ":" + (s.last_result.time || "");
+  if (key !== lastResultShown) {
+    lastResultShown = key;
+    if (s.last_result.status === "ok") toast("Панель обновлена до v" + (s.latest || ""));
+    else if (s.last_result.status === "error") toast("Ошибка обновления: " + (s.last_result.detail || ""), true);
+  }
+}
+
+function reloadWhenUp(retries) {
+  fetch("/api/update/status", { headers: { "Accept": "application/json" } })
+    .then(r => { if (r.ok) location.reload(); else retryReload(0); })
+    .catch(() => retryReload(0));
+}
+
+function retryReload(n) {
+  if (n > 20) { location.reload(); return; }
+  setTimeout(() => reloadWhenUp(), 2000);
 }
 
 updBtn.addEventListener("click", () => {
   if (updBtn.classList.contains("busy")) return;
   if (updPop.classList.contains("show")) { closeUpdatePop(); return; }
-  openUpdatePop();
+  renderUpdatePop(updStatus || {});
+  updPop.classList.add("show");
 });
 
 async function forceCheckUpdate() {
@@ -894,7 +965,7 @@ async function forceCheckUpdate() {
   try {
     updStatus = await api("POST", "/api/update/check", {});
     renderUpdate(updStatus);
-    renderUpdatePop();
+    renderUpdatePop(updStatus);
   } catch (e) {
     toast("Ошибка проверки: " + e.message, true);
     $("#upd-err").style.display = "";
@@ -914,8 +985,11 @@ $("#upd-go").addEventListener("click", async () => {
   $("#upd-later").disabled = true;
   $("#upd-go").textContent = "Запуск…";
   try {
-    const r = await api("POST", "/api/update/start", {});
-    pollUpdateTask(r.id);
+    await api("POST", "/api/update/start", {});
+    updBtn.classList.add("busy");
+    updBtn.disabled = true;
+    renderUpdatePop({ busy: true, version: updStatus.version, latest: updStatus.latest });
+    pollUpdateStatus();
   } catch (e) {
     toast("Не удалось запустить обновление: " + e.message, true);
     $("#upd-err").style.display = "";
@@ -926,30 +1000,42 @@ $("#upd-go").addEventListener("click", async () => {
   }
 });
 
-async function pollUpdateTask(id) {
+async function pollUpdateStatus() {
   try {
-    const d = await api("GET", "/api/update/task/" + q(id));
-    renderSteps($("#upd-steps"), d.steps || []);
-    if (d.status === "error") {
-      $("#upd-err").style.display = "";
-      $("#upd-err").textContent = d.error || "Ошибка обновления";
-      $("#upd-go").disabled = false;
-      $("#upd-go").textContent = "Обновить";
-      $("#upd-later").disabled = false;
-      toast("Ошибка обновления: " + (d.error || ""), true);
-      return;
-    }
-    if (d.status === "swapping") {
-      renderSteps($("#upd-steps"), [{ msg: "Обновление запущено. Панель перезапускается…", ok: true }]);
-      setTimeout(() => { location.reload(); }, 8000);
-      return;
-    }
-    if (d.status === "running") {
-      setTimeout(() => pollUpdateTask(id), 2000);
-    }
+    const s = await api("GET", "/api/update/status");
+    updStatus = s;
+    renderUpdate(s);
+    renderUpdatePop(s);
+    const lr = s.last_result;
+    if (lr && lr.status === "ok") { finishUpdateUI(false); return; }
+    if (lr && lr.status === "error") { finishUpdateUI(true, lr); return; }
+    setTimeout(pollUpdateStatus, 2000);
   } catch (e) {
-    setTimeout(() => pollUpdateTask(id), 2000);
+    setTimeout(pollUpdateStatus, 2000);
   }
+}
+
+function finishUpdateUI(isError, lr) {
+  updBusy = false;
+  $("#upd-go").disabled = false;
+  $("#upd-later").disabled = false;
+  if (isError) {
+    lr = lr || (updStatus && updStatus.last_result) || {};
+    $("#upd-err").style.display = "";
+    $("#upd-err").textContent = lr.detail || "Ошибка обновления";
+    $("#upd-ok").style.display = "none";
+    $("#upd-go-row").style.display = "";
+    $("#upd-go").textContent = "Проверить";
+    renderUpdate(updStatus || {});
+    toast("Ошибка обновления: " + (lr.detail || ""), true);
+    return;
+  }
+  closeUpdatePop();
+  renderUpdate(updStatus || {});
+  $("#update-btn").disabled = true;
+  $("#update-btn-label").textContent = "Обновлено ✓";
+  toast("Панель обновлена до v" + ((updStatus && updStatus.latest) || ""));
+  setTimeout(reloadWhenUp, 1200);
 }
 
 setInterval(loadUpdateStatus, 30 * 60 * 1000);

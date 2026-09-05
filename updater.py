@@ -11,6 +11,7 @@ The panel verifies the checksum *before* touching anything, swaps code in place
 the systemd service and rolls back on any failure.
 """
 import asyncio
+import calendar
 import hashlib
 import hmac
 import json
@@ -274,14 +275,25 @@ def _bak_dir(ver: str) -> Path:
 
 
 def _launch_swap(marker: Path):
+    """Launch the swap in a transient systemd scope so it is not killed when
+    `systemctl restart <service>` signals the panel's own cgroup."""
     script = PANEL_DIR / "deploy" / "upgrade-panel.sh"
     log = open(UPDATE_DIR / "upgrade.log", "ab")
-    subprocess.Popen(
-        [str(script), str(marker)],
+    if shutil.which("systemd-run"):
+        cmd = [
+            "systemd-run", "--quiet", "--scope", "--collect",
+            "--unit", "awg-panel-upgrade-%d" % int(time.time()),
+            str(script), str(marker),
+        ]
+    else:
+        cmd = [str(script), str(marker)]
+    proc = subprocess.Popen(
+        cmd,
         cwd=str(PANEL_DIR),
-        start_new_session=True,
         stdout=log, stderr=log,
     )
+    logger.info("swap launched pid=%s (systemd-run=%s)", proc.pid,
+                shutil.which("systemd-run") is not None)
 
 
 def _run_update_task(tid: str):
@@ -334,9 +346,65 @@ def _run_update_task(tid: str):
         t["done_at"] = time.time()
 
 
+_STALE_SWAP_SEC = 10 * 60
+
+
+def _result_time(s: Optional[str]) -> Optional[float]:
+    if not s:
+        return None
+    try:
+        return calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _read_last_result() -> Optional[Dict]:
+    p = UPDATE_DIR / "last_result.json"
+    try:
+        if p.exists():
+            return json.loads(p.read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _read_progress() -> Optional[Dict]:
+    p = UPDATE_DIR / "progress.json"
+    try:
+        if p.exists():
+            d = json.loads(p.read_text())
+            if isinstance(d, dict) and d.get("text"):
+                return d
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def _fresh_last_result() -> Optional[Dict]:
+    last = _read_last_result()
+    if not last or last.get("status") != "running":
+        return None
+    ts = _result_time(last.get("time"))
+    if ts is not None and time.time() - ts <= _STALE_SWAP_SEC:
+        return last
+    return None
+
+
+def _active_steps() -> List[Dict]:
+    with _lock:
+        best = None
+        for t in _UPD_TASKS.values():
+            if t.get("status") == "running" and (
+                    best is None or len(t.get("steps", [])) > len(best.get("steps", []))):
+                best = t
+        return (best or {}).get("steps", [])[-6:]
+
+
 def start_update() -> str:
     global _update_busy
     prune_tasks()
+    if _fresh_last_result():
+        raise UpdateBusy("Обновление уже выполняется")
     with _lock:
         if _update_busy:
             raise UpdateBusy("Обновление уже выполняется")
@@ -348,7 +416,8 @@ def start_update() -> str:
 
 
 def task(tid: str) -> Optional[Dict]:
-    return _UPD_TASKS.get(tid)
+    with _lock:
+        return _UPD_TASKS.get(tid)
 
 
 def prune_tasks():
@@ -367,22 +436,29 @@ def prune_tasks():
             _UPD_TASKS.pop(k, None)
 
 
-def _read_last_result() -> Optional[Dict]:
-    p = UPDATE_DIR / "last_result.json"
-    try:
-        if p.exists():
-            return json.loads(p.read_text())
-    except (OSError, json.JSONDecodeError):
-        pass
-    return None
-
-
 def status() -> Dict:
     with _lock:
         cached = dict(_CACHE)
     cached["version"] = current_version()
-    cached["last_result"] = _read_last_result()
-    cached["busy"] = _update_busy
+    last = _read_last_result()
+    if last and last.get("status") == "running":
+        ts = _result_time(last.get("time"))
+        if ts is not None and time.time() - ts > _STALE_SWAP_SEC:
+            last = {
+                "status": "error",
+                "version": last.get("version"),
+                "previous": last.get("previous"),
+                "time": last.get("time"),
+                "detail": "обновление было прервано (не завершилось за 10 минут)",
+            }
+    cached["last_result"] = last
+    cached["busy"] = _update_busy or bool(_fresh_last_result())
+    if cached["busy"]:
+        cached["progress"] = _read_progress()
+        cached["active_steps"] = _active_steps()
+    else:
+        cached["progress"] = None
+        cached["active_steps"] = []
     if cached.get("latest") and not cached.get("update_available"):
         cached["update_available"] = _is_newer(cached["latest"], cached["version"])
     return cached

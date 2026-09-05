@@ -57,6 +57,12 @@ write_result() {
   log "result: ${st} (${dt})"
 }
 
+write_progress() {
+  # $1 stage  $2 text  -> live progress shown in the UI
+  printf '{"stage":"%s","text":"%s","time":"%s"}\n' \
+    "$1" "$2" "$(date -u +%FT%TZ)" > "${update_dir}/progress.json"
+}
+
 rollback() {
   [ "${ROLLED_BACK}" -eq 1 ] && return 0
   ROLLED_BACK=1
@@ -85,6 +91,7 @@ rollback() {
   systemctl daemon-reload || true
   systemctl restart "${service}" || true
   log "rollback done: restored=$restored removed=$removed"
+  rm -f "${update_dir}/progress.json"
   write_result "error" "upgrade failed; previous version restored"
 }
 trap 'rollback' ERR
@@ -112,6 +119,7 @@ log "manifest OK"
 
 # ----------------------------------------------------------------------
 # 2) backup every tracked file we are about to replace/remove
+write_progress backup "Сохранение резервной копии текущих файлов"
 mkdir -p "${backup}"
 : > "${backup}/__manifest.new"
 while IFS= read -r f; do
@@ -149,6 +157,7 @@ if [ -f "${OLD_MANIFEST}" ]; then
 fi
 
 # 4) install the new payload
+write_progress install "Замена файлов на новые"
 while IFS= read -r f; do
   [ -z "$f" ] && continue
   mkdir -p "${app_dir}/$(dirname "$f")"
@@ -160,12 +169,14 @@ log "payload installed"
 
 # ----------------------------------------------------------------------
 # 5) requirements + import check
+write_progress deps "Установка зависимостей (pip)"
 "${python}" -m pip install -q -r "${app_dir}/requirements.txt"
 ( cd "${app_dir}" && "${python}" -c "import app" )
 log "requirements + import OK"
 
 # ----------------------------------------------------------------------
 # 6) restart + smoke
+write_progress restart "Перезапуск сервиса"
 systemctl daemon-reload
 systemctl restart "${service}"
 ok=0
@@ -191,6 +202,8 @@ log "smoke OK (HTTP ${CODE})"
 
 # ----------------------------------------------------------------------
 trap - ERR
+write_progress smoke "Готово, проверка завершена"
 write_result "ok" "updated to version"
+rm -f "${update_dir}/progress.json"
 rm -rf "${ORIG_PAYLOAD}"
 log "finished OK"
