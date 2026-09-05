@@ -52,10 +52,10 @@ SSH и без разрыва активных сессий.
 
 ## Установка панели (одной командой)
 
-Замените `<USER>` на ваш GitHub-аккаунт и выполните:
+Выполните:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<USER>/awg-panel/main/deploy/install-panel.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Huku7a/awg-panel/main/deploy/install-panel.sh | bash
 ```
 
 Скрипт: проверяет AmneziaWG, клонирует код, создаёт виртуальное окружение, генерирует
@@ -64,7 +64,7 @@ curl -fsSL https://raw.githubusercontent.com/<USER>/awg-panel/main/deploy/instal
 Либо из клона репозитория:
 
 ```bash
-git clone https://github.com/<USER>/awg-panel.git && cd awg-panel
+git clone https://github.com/Huku7a/awg-panel.git && cd awg-panel
 bash deploy/install-panel.sh
 ```
 
