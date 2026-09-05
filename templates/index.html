@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AWG Panel</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --border: #262b38;
+    --text: #e6e9f0; --muted: #8b93a7; --accent: #5b8cff;
+    --ok: #34c77b; --off: #ff5b6a; --warn: #ffb454;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--panel);
+  }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  #refresh-info { color: var(--muted); font-size: 12px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 16px; margin-bottom: 20px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .5px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; }
+  input[type=text] {
+    flex: 1; min-width: 220px; background: var(--bg);
+    border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 9px 12px; font-size: 14px;
+  }
+  button {
+    background: var(--accent); color: #fff; border: 0; cursor: pointer;
+    border-radius: 8px; padding: 9px 16px; font-size: 14px; font-weight: 500;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  button.danger { background: var(--off); }
+  button.ok { background: var(--ok); }
+  button.sm { padding: 5px 10px; font-size: 12px; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  th { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+  tr:last-child td { border-bottom: 0; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .badge.ok { background: rgba(52,199,123,.15); color: var(--ok); }
+  .badge.off { background: rgba(255,91,106,.12); color: var(--off); }
+  .badge.dis { background: rgba(139,147,167,.15); color: var(--muted); }
+  .muted { color: var(--muted); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  #toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 18px; display: none; z-index: 50; max-width: 90vw;
+  }
+  #toast.show { display: block; }
+  #toast.error { border-color: var(--off); color: var(--off); }
+  .modal-back {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal-back.show { display: flex; }
+  .modal {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; max-width: 420px; width: calc(100% - 40px);
+  }
+  .modal h3 { margin: 0 0 12px; }
+  .modal pre {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px; font-size: 11px; overflow: auto; max-height: 240px; margin: 0 0 12px;
+  }
+  .modal img { max-width: 100%; display: block; margin: 0 auto 12px; border-radius: 8px; }
+  .modal .row { margin-top: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AWG Panel</h1>
+  <span id="refresh-info">Обновлено: …</span>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Новый клиент</h2>
+    <div class="row">
+      <input type="text" id="name" placeholder="Имя клиента (1-15 симв.: a-z, 0-9, _ -)">
+      <button id="add-btn">Добавить клиента</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Клиенты</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Имя</th><th>IPv4</th><th>Статус</th><th>Подключение</th><th>Rx / Tx</th><th>Действия</th>
+        </tr>
+      </thead>
+      <tbody id="clients"></tbody>
+    </table>
+    <div id="empty" class="muted" style="padding:16px 0;text-align:center">Загрузка…</div>
+  </div>
+</main>
+
+<div id="toast"></div>
+
+<div class="modal-back" id="qr-back">
+  <div class="modal">
+    <h3 id="qr-title"></h3>
+    <img id="qr-img" alt="QR">
+    <div class="row">
+      <a id="qr-download" class="secondary" download><button class="secondary">Скачать .conf</button></a>
+      <button id="qr-close" class="secondary" style="flex:1">Закрыть</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+
+let clients = [];
+
+function toast(msg, isError) {
+  const el = $("#toast");
+  el.textContent = msg;
+  el.className = "show" + (isError ? " error" : "");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { el.className = ""; }, 4000);
+}
+
+function hb(n) {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = Number(n) || 0, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return i === 0 ? v + " B" : v.toFixed(1) + " " + units[i];
+}
+
+function fmtHs(ts) {
+  if (!ts) return "—";
+  const d = Date.now() / 1000 - ts;
+  if (d < 60) return Math.floor(d) + " с назад";
+  if (d < 3600) return Math.floor(d / 60) + " мин назад";
+  return Math.floor(d / 3600) + " ч назад";
+}
+
+function badge(c) {
+  if (!c.enabled) return '<span class="badge dis">выкл</span>';
+  return c.online ? '<span class="badge ok">онлайн</span>' : '<span class="badge off">оффлайн</span>';
+}
+
+function esc(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function api(method, url, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+  return data;
+}
+
+async function refresh() {
+  try {
+    clients = await api("GET", "/api/clients");
+    render();
+    $("#refresh-info").textContent = "Обновлено: " + new Date().toLocaleTimeString();
+  } catch (e) {
+    $("#refresh-info").textContent = "Ошибка: " + e.message;
+  }
+}
+
+function render() {
+  const tbody = $("#clients");
+  tbody.innerHTML = "";
+  $("#empty").style.display = clients.length ? "none" : "block";
+  $("#empty").textContent = clients.length ? "" : "Нет клиентов. Добавьте первого клиента.";
+  for (const c of clients) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><strong>${esc(c.name)}</strong></td>
+      <td class="mono">${esc(c.ipv4)}</td>
+      <td>${badge(c)}</td>
+      <td class="muted">${c.endpoint ? esc(c.endpoint) : (c.enabled ? "не подключён" : "отключён")}</td>
+      <td class="mono muted">${hb(c.rx)} / ${hb(c.tx)}<br><small>${c.enabled && !c.online ? "last: " + fmtHs(c.last_handshake) : ""}</small></td>
+      <td><div class="actions">
+        <button class="sm secondary" onclick="showQR('${esc(c.name)}')">QR</button>
+        ${c.enabled
+          ? `<button class="sm secondary" onclick="toggle('${esc(c.name)}', false)">Выкл</button>`
+          : `<button class="sm ok" onclick="toggle('${esc(c.name)}', true)">Вкл</button>`}
+        <button class="sm secondary" onclick="download('${esc(c.name)}')">.conf</button>
+        <button class="sm danger" onclick="del('${esc(c.name)}')">Удалить</button>
+      </div></td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+$("#add-btn").addEventListener("click", async () => {
+  const name = $("#name").value.trim();
+  if (!name) { toast("Введите имя клиента", true); return; }
+  try {
+    const c = await api("POST", "/api/clients", { name });
+    $("#name").value = "";
+    openQR(c.name, c.qr, c.config);
+    toast("Клиент «" + c.name + "» создан");
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+});
+
+$("#name").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#add-btn").click(); });
+
+async function toggle(name, enabled) {
+  try {
+    await api("PATCH", "/api/clients/" + encodeURIComponent(name), { enabled });
+    toast("Клиент «" + name + "» " + (enabled ? "включён" : "отключён"));
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+function download(name) {
+  window.location = "/api/clients/" + encodeURIComponent(name) + "/config";
+}
+
+async function del(name) {
+  if (!confirm("Удалить клиента «" + name + "»? Он потеряет доступ.")) return;
+  try {
+    await api("DELETE", "/api/clients/" + encodeURIComponent(name));
+    toast("Клиент «" + name + "» удалён");
+    await refresh();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function showQR(name) {
+  try {
+    const d = await api("GET", "/api/clients/" + encodeURIComponent(name) + "/qr");
+    openQR(name, d.qr);
+  } catch (e) { toast(e.message, true); }
+}
+
+function openQR(name, qr, config) {
+  $("#qr-title").textContent = "Клиент: " + name;
+  $("#qr-img").src = "data:image/png;base64," + qr;
+  $("#qr-download").href = "/api/clients/" + encodeURIComponent(name) + "/config";
+  $("#qr-back").classList.add("show");
+  if (config) {
+    $("#qr-download").dataset.config = config;
+  }
+}
+
+$("#qr-close").addEventListener("click", () => $("#qr-back").classList.remove("show"));
+$("#qr-back").addEventListener("click", (e) => { if (e.target === $("#qr-back")) $("#qr-back").classList.remove("show"); });
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>
