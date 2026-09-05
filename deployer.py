@@ -13,8 +13,8 @@ logger = logging.getLogger("awg-deployer")
 
 PANEL_DIR = Path(__file__).resolve().parent
 
-EXCLUDE_DIRS = {"venv", ".git", "__pycache__"}
-EXCLUDE_FILES = {"state.json", "servers.json", "*.pyc"}
+EXCLUDE_DIRS = {"venv", ".git", "__pycache__", ".updates", ".bak", "dist", ".github"}
+EXCLUDE_FILES = {"state.json", "servers.json", "*.pyc", "*.tar.gz", "*.sha256"}
 
 # Where SSH host keys are pinned (trust-on-first-use). Overridable via env.
 KNOWN_HOSTS_FILE = Path(os.environ.get("AWG_KNOWN_HOSTS_FILE", "/etc/awg-panel/known-hosts.json"))

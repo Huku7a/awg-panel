@@ -14,6 +14,7 @@
 #   --interface IF     awg interface (default: awg0)
 #   --dir PATH         app directory (default: /root/awg-panel)
 #   --repo URL         repo to clone if --dir does not contain the app
+#   --update-repo NAME GitHub repo used for self-update (default: Huku7a/awg-panel)
 #   --service NAME     systemd unit name (default: awg-panel)
 #   --config-dir PATH  where panel credentials live (default: /etc/awg-panel)
 #   --no-ufw           do not open the port in UFW
@@ -21,6 +22,7 @@
 set -euo pipefail
 
 REPO_URL="${AWG_PANEL_REPO:-https://github.com/USER/awg-panel.git}"
+UPDATE_REPO="Huku7a/awg-panel"
 USER_NAME="admin"
 PASSWORD=""
 PORT=5182
@@ -38,6 +40,7 @@ while [ $# -gt 0 ]; do
     --interface) IFACE="$2"; shift 2 ;;
     --dir) APP_DIR="$2"; shift 2 ;;
     --repo) REPO_URL="$2"; shift 2 ;;
+    --update-repo) UPDATE_REPO="$2"; shift 2 ;;
     --service) SERVICE="$2"; shift 2 ;;
     --config-dir) ETC="$2"; shift 2 ;;
     --no-ufw) NO_UFW=1; shift ;;
@@ -135,6 +138,8 @@ Environment=AWG_INTERFACE=${IFACE}
 Environment=AWG_STATE_FILE=${APP_DIR}/state.json
 Environment=AWG_SERVERS_FILE=${APP_DIR}/servers.json
 Environment=AWG_CLIENT_DIR=/root
+Environment=AWG_UPDATE_REPO=${UPDATE_REPO}
+Environment=AWG_SERVICE_NAME=${SERVICE}
 EnvironmentFile=${ETC}/config
 Restart=on-failure
 RestartSec=3
@@ -165,11 +170,13 @@ fi
 
 PANEL_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "${PANEL_IP}" ] || PANEL_IP="<server-ip>"
+PANEL_VERSION="$(cat "${APP_DIR}/VERSION" 2>/dev/null || echo "unknown")"
 
 echo ""
 info "============================================="
 info "AWG Panel installed and running. SUMMARY"
 info "============================================="
+info "  Version:   ${PANEL_VERSION}"
 info "  URL:       http://${PANEL_IP}:${PORT}/"
 info "  Login:     ${USER_NAME}"
 info "  Password:  ${PASSWORD}"
@@ -177,6 +184,7 @@ info ""
 info "  Local interface:  ${IFACE} (${CONF_DIR}/${IFACE}.conf)"
 info "  Config file:      ${ETC}/config"
 info "  Systemd:          systemctl {status|restart|stop} ${SERVICE}"
+info "  Updates:          GitHub Releases from ${UPDATE_REPO} (auto-check)"
 echo ""
 info "  Remote VDS? Install the agent there:"
 info "    bash ${APP_DIR}/deploy/install-agent.sh ${PANEL_IP} <token>"

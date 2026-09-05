@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 state.json
 servers.json
+.updates/
+.bak/
+dist/

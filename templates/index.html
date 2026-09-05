@@ -119,12 +119,63 @@
   .awg-status.done .spin, .awg-status.error .spin { display: none; }
   .spin { width: 12px; height: 12px; flex: none; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .update-wrap { position: relative; }
+  #update-btn {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; font-size: 12px;
+  }
+  #update-btn .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  #update-btn.avail { color: var(--ok); border-color: rgba(52,199,123,.45); }
+  #update-btn.avail .dot { background: var(--ok); animation: pulse 1.4s ease-in-out infinite; }
+  #update-btn.error { color: var(--off); border-color: rgba(255,91,106,.45); }
+  #update-btn.error .dot { background: var(--off); }
+  #update-btn.busy .dot {
+    background: transparent; border: 2px solid var(--border); border-top-color: var(--accent);
+    width: 10px; height: 10px; animation: spin .9s linear infinite;
+  }
+  #update-btn:disabled { opacity: .6; cursor: default; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .update-pop {
+    display: none; position: absolute; right: 0; top: calc(100% + 8px);
+    width: 340px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px; z-index: 60; box-shadow: 0 12px 32px rgba(0,0,0,.45);
+  }
+  .update-pop.show { display: block; }
+  .update-pop h3 { margin: 0 0 8px; font-size: 14px; }
+  .update-pop .ver-line { font-size: 13px; margin: 3px 0; }
+  .update-pop pre {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px; font-size: 11px; overflow: auto; max-height: 160px;
+    margin: 8px 0; white-space: pre-wrap; word-break: break-word;
+  }
+  .update-pop .row { margin-top: 10px; }
+  .update-err { color: var(--off); font-size: 12px; margin-top: 8px; }
+  .update-ok-note { color: var(--ok); font-size: 12px; margin-top: 8px; }
 </style>
 </head>
 <body>
 <header>
   <h1>AWG Panel</h1>
   <div class="head-right">
+    <div class="update-wrap">
+      <button id="update-btn" class="secondary">
+        <span class="dot"></span><span id="update-btn-label">Проверка…</span>
+      </button>
+      <div class="update-pop" id="update-pop">
+        <h3>Обновление панели</h3>
+        <div class="ver-line">Текущая версия: <b id="upd-cur">…</b></div>
+        <div class="ver-line" id="upd-next-line">Доступна версия: <b id="upd-next">—</b></div>
+        <div class="ver-line muted" id="upd-date"></div>
+        <pre id="upd-notes" style="display:none"></pre>
+        <ul class="steps" id="upd-steps"></ul>
+        <div class="update-err" id="upd-err" style="display:none"></div>
+        <div class="update-ok-note" id="upd-ok" style="display:none"></div>
+        <div class="row" id="upd-go-row">
+          <button id="upd-go" class="ok" style="flex:1">Обновить</button>
+          <button id="upd-later" class="secondary" style="flex:1">Позже</button>
+        </div>
+      </div>
+    </div>
     <span id="refresh-info">Обновлено: …</span>
   </div>
 </header>
@@ -728,7 +779,183 @@ function openQR(name, qr, config) {
 $("#qr-close").addEventListener("click", () => $("#qr-back").classList.remove("show"));
 $("#qr-back").addEventListener("click", (e) => { if (e.target === $("#qr-back")) $("#qr-back").classList.remove("show"); });
 
+// ----------------------------------------------------------------------
+// Panel self-update (GitHub Releases)
+// ----------------------------------------------------------------------
+
+let updStatus = null;
+let updBusy = false;
+let lastResultShown = null;
+const updBtn = $("#update-btn");
+const updPop = $("#update-pop");
+
+function openUpdatePop() { renderUpdatePop(); updPop.classList.add("show"); }
+function closeUpdatePop() { updPop.classList.remove("show"); }
+$("#upd-later").addEventListener("click", closeUpdatePop);
+
+document.addEventListener("click", (e) => {
+  if (updPop.classList.contains("show") && !updPop.contains(e.target) && !updBtn.contains(e.target)) {
+    closeUpdatePop();
+  }
+});
+
+function renderUpdate(s) {
+  const label = $("#update-btn-label");
+  updBtn.classList.remove("avail", "error", "busy");
+  updBtn.disabled = false;
+  const running = s.last_result && s.last_result.status === "running";
+  if (s.busy || running) {
+    updBtn.classList.add("busy");
+    updBtn.disabled = true;
+    label.textContent = running ? "Обновление…" : "Проверка…";
+  } else if (s.update_available) {
+    updBtn.classList.add("avail");
+    label.textContent = "v" + s.latest;
+  } else if (s.error && s.state !== "no-release") {
+    updBtn.classList.add("error");
+    label.textContent = "Ошибка проверки";
+  } else {
+    label.textContent = "v" + s.version;
+  }
+}
+
+function maybeToastLastResult(s) {
+  if (!s.last_result) return;
+  const key = s.last_result.status + ":" + (s.last_result.time || "");
+  if (key !== lastResultShown) {
+    lastResultShown = key;
+    if (s.last_result.status === "ok") toast("Панель обновлена до v" + (s.latest || ""));
+    else if (s.last_result.status === "error") toast("Ошибка обновления: " + (s.last_result.detail || ""), true);
+  }
+}
+
+async function loadUpdateStatus() {
+  try {
+    const s = await api("GET", "/api/update/status");
+    updStatus = s;
+    renderUpdate(s);
+    maybeToastLastResult(s);
+  } catch (e) {
+    updStatus = { error: e.message, version: "?" };
+    updBtn.classList.add("error");
+    $("#update-btn-label").textContent = "Ошибка";
+  }
+}
+
+function renderUpdatePop() {
+  const s = updStatus || {};
+  $("#upd-cur").textContent = "v" + (s.version || "?");
+  $("#upd-steps").innerHTML = "";
+  const running = s.busy || (s.last_result && s.last_result.status === "running");
+  if (s.update_available) {
+    $("#upd-next-line").style.display = "";
+    $("#upd-next").textContent = "v" + (s.latest || "");
+    $("#upd-date").textContent = s.published_at ? "Опубликовано: " + new Date(s.published_at).toLocaleString() : "";
+    $("#upd-notes").style.display = s.release_notes ? "" : "none";
+    $("#upd-notes").textContent = s.release_notes || "";
+    $("#upd-go-row").style.display = "";
+    $("#upd-go").textContent = "Обновить";
+    $("#upd-go").disabled = updBusy;
+    $("#upd-err").style.display = "none";
+    $("#upd-ok").style.display = "none";
+  } else {
+    $("#upd-next-line").style.display = "none";
+    $("#upd-notes").style.display = "none";
+    $("#upd-date").textContent = "";
+    if (running) {
+      $("#upd-go-row").style.display = "none";
+      $("#upd-ok").style.display = "";
+      $("#upd-ok").textContent = "Обновление выполняется…";
+      $("#upd-err").style.display = "none";
+    } else {
+      $("#upd-go-row").style.display = "";
+      $("#upd-go").textContent = "Проверить";
+      $("#upd-go").disabled = updBusy;
+      $("#upd-ok").style.display = s.error ? "none" : "";
+      $("#upd-ok").textContent = "Установлена последняя версия";
+      $("#upd-err").style.display = s.error ? "" : "none";
+      $("#upd-err").textContent = s.error || "";
+    }
+  }
+}
+
+updBtn.addEventListener("click", () => {
+  if (updBtn.classList.contains("busy")) return;
+  if (updPop.classList.contains("show")) { closeUpdatePop(); return; }
+  openUpdatePop();
+});
+
+async function forceCheckUpdate() {
+  if (updBusy) return;
+  updBusy = true;
+  $("#upd-go").disabled = true;
+  $("#upd-go").textContent = "Проверка…";
+  $("#upd-err").style.display = "none";
+  try {
+    updStatus = await api("POST", "/api/update/check", {});
+    renderUpdate(updStatus);
+    renderUpdatePop();
+  } catch (e) {
+    toast("Ошибка проверки: " + e.message, true);
+    $("#upd-err").style.display = "";
+    $("#upd-err").textContent = e.message;
+  } finally {
+    updBusy = false;
+  }
+}
+
+$("#upd-go").addEventListener("click", async () => {
+  if (updBusy) return;
+  if (!updStatus || !updStatus.update_available) { forceCheckUpdate(); return; }
+  if (!confirm("Обновить панель до v" + updStatus.latest + "? Будет выполнен автоматический перезапуск панели.")) return;
+  $("#upd-steps").innerHTML = "";
+  $("#upd-err").style.display = "none";
+  $("#upd-go").disabled = true;
+  $("#upd-later").disabled = true;
+  $("#upd-go").textContent = "Запуск…";
+  try {
+    const r = await api("POST", "/api/update/start", {});
+    pollUpdateTask(r.id);
+  } catch (e) {
+    toast("Не удалось запустить обновление: " + e.message, true);
+    $("#upd-err").style.display = "";
+    $("#upd-err").textContent = e.message;
+    $("#upd-go").disabled = false;
+    $("#upd-go").textContent = "Обновить";
+    $("#upd-later").disabled = false;
+  }
+});
+
+async function pollUpdateTask(id) {
+  try {
+    const d = await api("GET", "/api/update/task/" + q(id));
+    renderSteps($("#upd-steps"), d.steps || []);
+    if (d.status === "error") {
+      $("#upd-err").style.display = "";
+      $("#upd-err").textContent = d.error || "Ошибка обновления";
+      $("#upd-go").disabled = false;
+      $("#upd-go").textContent = "Обновить";
+      $("#upd-later").disabled = false;
+      toast("Ошибка обновления: " + (d.error || ""), true);
+      return;
+    }
+    if (d.status === "swapping") {
+      renderSteps($("#upd-steps"), [{ msg: "Обновление запущено. Панель перезапускается…", ok: true }]);
+      setTimeout(() => { location.reload(); }, 8000);
+      return;
+    }
+    if (d.status === "running") {
+      setTimeout(() => pollUpdateTask(id), 2000);
+    }
+  } catch (e) {
+    setTimeout(() => pollUpdateTask(id), 2000);
+  }
+}
+
+setInterval(loadUpdateStatus, 30 * 60 * 1000);
+
 loadServers().then(() => {
+  loadUpdateStatus();
   pingCurrent();
   refresh();
 });

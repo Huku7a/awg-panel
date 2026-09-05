@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 import core
 import deployer
 import httpx
+import updater
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
@@ -33,7 +35,16 @@ ALLOWED_ORIGINS = {o.strip() for o in os.environ.get("AWG_ALLOWED_ORIGINS", "").
 # Allow agent URLs pointing at private/reserved IP ranges (only for isolated LANs).
 ALLOW_PRIVATE_AGENTS = os.environ.get("AWG_ALLOW_PRIVATE_AGENTS", "") == "1"
 
-app = FastAPI(title="AWG Panel", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    worker = asyncio.create_task(updater.updater_worker())
+    try:
+        yield
+    finally:
+        worker.cancel()
+
+
+app = FastAPI(title="AWG Panel", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 
 def secure_eq(a: str, b: str) -> bool:
@@ -413,6 +424,43 @@ def deploy_status(did: str):
     if not d:
         raise HTTPException(status_code=404, detail="Deployment not found")
     return d
+
+
+# ----------------------------------------------------------------------
+# Panel self-update (GitHub Releases)
+# ----------------------------------------------------------------------
+
+@app.get("/api/update/status")
+def update_status():
+    return updater.status()
+
+
+@app.post("/api/update/check")
+def update_check():
+    try:
+        return updater.check_updates()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update check failed: {e}")
+
+
+@app.post("/api/update/start", status_code=202)
+def update_start():
+    try:
+        tid = updater.start_update()
+    except updater.UpdateBusy as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update failed to start: {e}")
+    return {"id": tid}
+
+
+@app.get("/api/update/task/{tid}")
+def update_task(tid: str):
+    updater.prune_tasks()
+    t = updater.task(tid)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return t
 
 
 # ----------------------------------------------------------------------
