@@ -367,6 +367,8 @@ def op_create_client(name: str) -> Dict:
 
 
 def op_toggle_client(name: str, enabled: bool) -> Dict:
+    if not NAME_RE.match(name):
+        raise ValueError("Invalid client name")
     with _lock:
         clients = parse_clients()
         state = load_state()
@@ -415,6 +417,8 @@ def op_toggle_client(name: str, enabled: bool) -> Dict:
 
 
 def op_delete_client(name: str) -> Dict:
+    if not NAME_RE.match(name):
+        raise ValueError("Invalid client name")
     with _lock:
         state = load_state()
         cur = next((c for c in parse_clients() if c["name"] == name), None)
@@ -438,6 +442,8 @@ def op_delete_client(name: str) -> Dict:
 
 
 def op_client_config(name: str) -> Tuple[str, str]:
+    if not NAME_RE.match(name):
+        raise ValueError("Invalid client name")
     f = client_conf_file(name)
     if not f.exists():
         raise FileNotFoundError(f"Config file not found for client '{name}'")

@@ -3,18 +3,26 @@
 # Install the AWG agent on the current VDS.
 #
 # Usage:
-#   bash install-agent.sh [PANEL_IP] [TOKEN]
+#   bash install-agent.sh [PANEL_IP] [TOKEN|-]
 #
 #   PANEL_IP  - public IP of the central panel. If given, UFW opens port 5183
 #               ONLY for this IP. Otherwise the agent stays open to the world
 #               (NOT recommended - you must restrict access yourself).
-#   TOKEN     - optional agent token (X-Api-Key). If omitted, a random one is
-#               generated and printed at the end.
+#   TOKEN     - optional agent token (X-Api-Key). Pass "-" to read it from
+#               stdin (avoids exposing it in `ps`); a random one is generated
+#               if nothing is provided. If /etc/awg-panel/agent-config already
+#               exists, the stored token is reused.
 #
 set -euo pipefail
 
 PANEL_IP="${1:-}"
-TOKEN="${2:-}"
+TOKEN_ARG="${2:-}"
+TOKEN=""
+if [ "${TOKEN_ARG}" = "-" ]; then
+  read -r TOKEN || true
+else
+  TOKEN="${TOKEN_ARG}"
+fi
 APP_DIR="/root/awg-agent"
 CONF_DIR="/etc/awg-panel"
 SERVICE="awg-agent.service"
@@ -41,6 +49,10 @@ venv/bin/pip install -q -r requirements.txt
 venv/bin/python -c "import fastapi, uvicorn, qrcode, httpx" || { echo -e "${RED}Dependency check failed${NC}"; exit 1; }
 
 echo "== agent config =="
+if [ -f "${CONF_DIR}/agent-config" ] && [ -z "${TOKEN}" ]; then
+  TOKEN="$(grep '^AWG_AGENT_TOKEN=' "${CONF_DIR}/agent-config" | cut -d= -f2-)"
+  echo "* reusing existing token from ${CONF_DIR}/agent-config"
+fi
 if [ -z "${TOKEN}" ]; then
   TOKEN="$(openssl rand -hex 16)"
 fi

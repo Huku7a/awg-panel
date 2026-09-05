@@ -18,6 +18,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("awg-agent")
 
 TOKEN = os.environ.get("AWG_AGENT_TOKEN", "")
+# Fail closed: without a token every request is rejected unless the operator
+# explicitly opts into running the agent without authentication.
+ALLOW_NO_AUTH = os.environ.get("AWG_ALLOW_NO_AUTH", "") == "1"
 
 REFRESH_INTERVAL = 6 * 3600  # seconds between automatic apt self-refreshes
 
@@ -69,6 +72,11 @@ def secure_eq(a: str, b: str) -> bool:
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
+    if not TOKEN and not ALLOW_NO_AUTH:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Agent authentication is not configured (set AWG_AGENT_TOKEN)"},
+        )
     if TOKEN:
         header = request.headers.get("X-Api-Key", "")
         if not header or not secure_eq(header, TOKEN):
@@ -172,6 +180,8 @@ def list_clients():
 def get_client_config(name: str):
     try:
         fname, conf = core.op_client_config(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return Response(
@@ -185,6 +195,8 @@ def get_client_config(name: str):
 def get_client_qr(name: str):
     try:
         return {"qr": core.op_client_qr(name)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

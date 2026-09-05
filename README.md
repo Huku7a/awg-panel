@@ -170,11 +170,22 @@ bash /root/awg-agent/deploy/install-agent.sh <IP_панели> [токен]
 - Панель — Basic Auth (логин/пароль из `/etc/awg-panel/config`, права `600`);
 - Узел — только по Bearer-токену `X-Api-Key` (`/etc/awg-panel/agent-config`, права `600`),
   сравнение через константного-времени `hmac.compare_digest`;
+- **Fail-closed**: без пароля панели / токена агента приложения отказывают в обслуживании
+  (код 503). Оператор может явно это отключить переменной `AWG_ALLOW_NO_AUTH=1`;
 - Перед любыми изменениями конфигурация AmneziaWG бэкапится
   (`awg0.conf.bak-<время>` в `/etc/amnezia/amneziawg/`);
+- **SSH-деплой** агента пинует host key узла (trust-on-first-use,
+  `/etc/awg-panel/known-hosts.json`) и отказывается подключаться при смене ключа;
+- **Токен агента при деплое** передаётся по SFTP/`stdin`, а не аргументом командной строки
+  (не светится в `ps`);
+- **SSRF-защита**: URL агента не может указывать на loopback, private/link-local/reserved
+  сети (включая cloud metadata `169.254.169.254`); для изолированных LAN — `AWG_ALLOW_PRIVATE_AGENTS=1`;
+- **CSRF-защита**: мутирующие запросы принимаются только от своего `Host` либо из
+  `AWG_ALLOWED_ORIGINS` (запросы без заголовка `Origin` — CLI/curl — не ограничиваются);
 - Секреты не попадают в репозиторий: `state.json` и `servers.json` в `.gitignore`;
+- Фоновые задачи обновления и деплоя очищаются из памяти (TTL 1 ч) — без неограниченного роста;
 - Для публичного доступа ставьте панель за reverse proxy (Nginx / Caddy) с TLS —
-  панель отдаёт трафик через HTTP, а Basic Auth поверх HTTPS это то, что нужно.
+  Basic Auth поверх HTTPS и rate-limit на уровне прокси это то, что нужно.
 
 ## Структура проекта
 
@@ -203,8 +214,13 @@ AWG_AGENT_TOKEN=testtoken venv/bin/uvicorn agent:app --port 5183 \
   --env AWG_CONFIG_DIR=/tmp/awg-test
 ```
 
-Переменные окружения агента: `AWG_AGENT_TOKEN`, `AWG_CONFIG_DIR`, `AWG_STATE_FILE`,
-`AWG_SERVERS_FILE`, `AWG_CLIENT_DIR`.
+Переменные окружения панели: `AWG_PANEL_USER`, `AWG_PANEL_PASSWORD`, `AWG_PANEL_IP`,
+`AWG_ALLOWED_ORIGINS`, `AWG_ALLOW_NO_AUTH`, `AWG_ALLOW_PRIVATE_AGENTS`,
+`AWG_KNOWN_HOSTS_FILE` (панель/скрипты), `AWG_CONFIG_DIR`, `AWG_INTERFACE`,
+`AWG_STATE_FILE`, `AWG_SERVERS_FILE`, `AWG_CLIENT_DIR`.
+
+Переменные окружения агента: `AWG_AGENT_TOKEN`, `AWG_ALLOW_NO_AUTH`,
+`AWG_CONFIG_DIR`, `AWG_STATE_FILE`, `AWG_SERVERS_FILE`, `AWG_CLIENT_DIR`.
 
 ## Устранение неполадок
 

@@ -31,7 +31,7 @@ rsync -az --delete \
   -e ssh "${THIS_DIR}/" "${HOST}:${REMOTE_DIR}/"
 
 echo "== running install-agent.sh on ${HOST} =="
-ssh "${HOST}" "cd ${REMOTE_DIR} && bash deploy/install-agent.sh ${PANEL_IP} ${TOKEN}"
+echo "${TOKEN}" | ssh "${HOST}" "cd ${REMOTE_DIR} && bash deploy/install-agent.sh ${PANEL_IP} -"
 
 echo ""
 echo "== done. Add the server in the panel UI =="

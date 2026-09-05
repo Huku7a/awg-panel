@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import base64
+import ipaddress
 import asyncio
 import hmac
 import logging
@@ -10,6 +11,7 @@ import threading
 import time
 import uuid
 from typing import Dict, List, Optional
+from urllib.parse import urlsplit
 
 import core
 import deployer
@@ -23,6 +25,13 @@ logger = logging.getLogger("awg-panel")
 
 AUTH_USER = os.environ.get("AWG_PANEL_USER", "admin")
 AUTH_PASSWORD = os.environ.get("AWG_PANEL_PASSWORD", "")
+# Fail closed: a panel without credentials refuses all requests unless the
+# operator explicitly opts into running it without authentication.
+ALLOW_NO_AUTH = os.environ.get("AWG_ALLOW_NO_AUTH", "") == "1"
+# Extra origins (besides the panel's own Host header) allowed to mutate state.
+ALLOWED_ORIGINS = {o.strip() for o in os.environ.get("AWG_ALLOWED_ORIGINS", "").split(",") if o.strip()}
+# Allow agent URLs pointing at private/reserved IP ranges (only for isolated LANs).
+ALLOW_PRIVATE_AGENTS = os.environ.get("AWG_ALLOW_PRIVATE_AGENTS", "") == "1"
 
 app = FastAPI(title="AWG Panel", docs_url=None, redoc_url=None)
 
@@ -31,8 +40,30 @@ def secure_eq(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode(), b.encode())
 
 
+def _origin_allowed(request: Request) -> bool:
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    netloc = urlsplit(origin).netloc
+    if netloc == request.headers.get("Host", ""):
+        return True
+    return origin in ALLOWED_ORIGINS
+
+
+@app.middleware("http")
+async def csrf_guard(request: Request, call_next):
+    if request.method in ("POST", "PATCH", "PUT", "DELETE") and not _origin_allowed(request):
+        return JSONResponse(status_code=403, content={"detail": "Cross-origin request rejected"})
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def basic_auth(request: Request, call_next):
+    if not AUTH_PASSWORD and not ALLOW_NO_AUTH:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Panel authentication is not configured (set AWG_PANEL_PASSWORD)"},
+        )
     if AUTH_PASSWORD:
         auth = request.headers.get("Authorization", "")
         ok = auth.startswith("Basic ")
@@ -84,7 +115,8 @@ async def agent_request(method: str, server: Dict, path: str, body=None, timeout
     if body is not None:
         kwargs["json"] = body
     try:
-        resp = await httpx.AsyncClient().request(method, url, **kwargs)
+        async with httpx.AsyncClient() as client:
+            resp = await client.request(method, url, **kwargs)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Agent unreachable: {e}")
     try:
@@ -115,6 +147,39 @@ def agent_request_sync(method: str, server: Dict, path: str, body=None, timeout=
     if resp.status_code >= 400:
         raise RuntimeError(str(data.get("detail") or data or f"HTTP {resp.status_code}"))
     return data
+
+
+def _check_agent_url(url: str) -> str:
+    """Validate an agent URL to avoid SSRF (private/loopback/link-local/reserved
+    targets incl. cloud metadata 169.254.169.254). Opt out with
+    AWG_ALLOW_PRIVATE_AGENTS=1 for isolated LANs."""
+    if ALLOW_PRIVATE_AGENTS:
+        return url
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Некорректный URL агента")
+    if not host:
+        raise HTTPException(status_code=400, detail="URL агента не содержит хоста")
+    host = host.rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        raise HTTPException(status_code=400, detail="localhost запрещён как адрес агента")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail=f"Не удалось разрешить хост агента: {host}")
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            continue
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Недопустимый адрес агента (internal/private IP): {ip}",
+            )
+    return url
 
 
 async def _agent_retry(method: str, server: Dict, path: str, body=None, timeout=15.0, attempts=3):
@@ -181,6 +246,7 @@ async def add_server(body: ServerCreate):
     url = body.url.rstrip("/")
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "http://" + url
+    _check_agent_url(url)
     probe = {"id": "probe", "url": url, "token": body.token}
     try:
         health = await agent_request("GET", probe, "/api/health")
@@ -209,6 +275,7 @@ async def probe_server(body: ServerProbe):
     url = body.url.rstrip("/")
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "http://" + url
+    _check_agent_url(url)
     probe = {"id": "probe", "url": url, "token": body.token}
     health = await agent_request("GET", probe, "/api/health")
     return {"ok": bool(health.get("ok")), "interface": health.get("interface")}
@@ -242,6 +309,24 @@ async def ping_server(server_id: str):
 
 deployments: Dict[str, Dict] = {}
 DEPLOY_LOCK = threading.Lock()
+
+_TASK_TTL = 3600  # keep finished tasks in memory for 1 hour
+_MAX_TASKS = 100
+
+
+def _prune_tasks(tasks: Dict[str, Dict]):
+    now = time.time()
+    for k in list(tasks):
+        t = tasks[k]
+        if t.get("status") in ("done", "error") and now - t.get("done_at", 0) > _TASK_TTL:
+            del tasks[k]
+    if len(tasks) > _MAX_TASKS:
+        finished = sorted(
+            ((t.get("done_at") or 0, k) for k, t in tasks.items() if t.get("status") in ("done", "error")),
+            reverse=True,
+        )
+        for _, k in finished[_MAX_TASKS:]:
+            tasks.pop(k, None)
 
 
 def panel_public_ip() -> str:
@@ -295,11 +380,11 @@ def _run_deploy(did: str, body: "DeployRequest"):
         url = f"http://{body.host.strip()}:5183"
         server_id = register_server(body.name.strip(), url, token)
         d["steps"].append({"msg": "Сервер добавлен в панель", "ok": True})
-        d.update(status="done", result={"server_id": server_id, "url": url, "token": token})
+        d.update(status="done", result={"server_id": server_id, "url": url, "token": token}, done_at=time.time())
         logger.info("Deployment %s finished, server %s", did, server_id)
     except Exception as e:
         d["steps"].append({"msg": f"Ошибка: {e}", "ok": False})
-        d.update(status="error", error=str(e))
+        d.update(status="error", error=str(e), done_at=time.time())
         logger.exception("Deployment %s failed", did)
 
 
@@ -314,14 +399,16 @@ class DeployRequest(BaseModel):
 
 @app.post("/api/deploy", status_code=202)
 def start_deploy(body: DeployRequest):
+    _prune_tasks(deployments)
     did = uuid.uuid4().hex
-    deployments[did] = {"status": "running", "steps": [], "result": None, "error": None}
+    deployments[did] = {"status": "running", "steps": [], "result": None, "error": None, "done_at": 0}
     threading.Thread(target=_run_deploy, args=(did, body), daemon=True).start()
     return {"id": did}
 
 
 @app.get("/api/deploy/{did}")
 def deploy_status(did: str):
+    _prune_tasks(deployments)
     d = deployments.get(did)
     if not d:
         raise HTTPException(status_code=404, detail="Deployment not found")
@@ -387,28 +474,32 @@ def _awg_update_task(tid: str, server_id: str, action: str):
             else:
                 raise RuntimeError("превышено время ожидания задачи на агенте")
         d["status"] = "done"
+        d["done_at"] = time.time()
     except Exception as e:
         d["steps"].append({"msg": f"Ошибка: {e}", "ok": False})
         d["status"] = "error"
         d["error"] = str(e)
+        d["done_at"] = time.time()
         logger.exception("awg task %s failed", tid)
 
 
 @app.post("/api/awg/update", status_code=202)
 def start_awg_update(server: str = "local", action: str = "upgrade"):
+    _prune_tasks(awg_tasks)
     if action not in ("upgrade", "install"):
         raise HTTPException(status_code=400, detail="action must be 'upgrade' or 'install'")
     if not find_server(server):
         raise HTTPException(status_code=404, detail="Server not found")
     tid = uuid.uuid4().hex
     awg_tasks[tid] = {"id": tid, "status": "running", "steps": [], "result": None,
-                      "error": None, "action": action, "server": server}
+                      "error": None, "action": action, "server": server, "done_at": 0}
     threading.Thread(target=_awg_update_task, args=(tid, server, action), daemon=True).start()
     return {"id": tid}
 
 
 @app.get("/api/awg/update/{tid}")
 def awg_update_status(tid: str):
+    _prune_tasks(awg_tasks)
     d = awg_tasks.get(tid)
     if not d:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -445,6 +536,8 @@ async def get_client_config(name: str, server: str = "local"):
     if server == "local":
         try:
             fname, conf = core.op_client_config(name)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
         return Response(
@@ -463,6 +556,8 @@ async def get_client_qr(name: str, server: str = "local"):
     if server == "local":
         try:
             return {"qr": core.op_client_qr(name)}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except FileNotFoundError as e:
             raise HTTPException(status_code=404, detail=str(e))
     return await agent_request("GET", s, f"/api/clients/{name}/qr")
