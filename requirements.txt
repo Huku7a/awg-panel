@@ -2,3 +2,4 @@ fastapi>=0.110
 uvicorn>=0.29
 qrcode[pil]>=7.4
 httpx>=0.27
+paramiko>=3.4

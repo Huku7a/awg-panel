@@ -89,6 +89,14 @@
   .server-list { list-style: none; margin: 0 0 4px; padding: 0; }
   .server-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
   .server-list li:last-child { border-bottom: 0; }
+  h4 { margin: 0 0 4px; font-size: 13px; color: var(--text); }
+  .steps { list-style: none; margin: 10px 0 0; padding: 0; font-size: 13px; }
+  .steps li { padding: 4px 0; display: flex; gap: 8px; align-items: center; }
+  .steps .dot-ok { color: var(--ok); }
+  .steps .dot-err { color: var(--off); }
+  .steps .dot-run { color: var(--warn); }
+  .hint { font-size: 11px; color: var(--muted); }
+  .divider { border-top: 1px solid var(--border); margin: 14px 0 10px; }
 </style>
 </head>
 <body>
@@ -165,6 +173,22 @@
         <button id="sv-add">Добавить</button>
       </div>
     </div>
+    <div class="divider"></div>
+    <h4>Развернуть агент на новый VDS</h4>
+    <p class="hint">Панель сама подключится по SSH, скопирует код, установит агент (порт 5183, UFW откроется только для панели) и добавит сервер в список.</p>
+    <div class="row">
+      <input type="text" id="dp-name" placeholder="Имя сервера (например, VPS-3)">
+      <input type="text" id="dp-host" placeholder="Хост VDS (IP или домен)">
+    </div>
+    <div class="row">
+      <input type="text" id="dp-user" value="root" style="min-width:100px;flex:0">
+      <input type="text" id="dp-port" value="22" style="min-width:70px;flex:0">
+      <input type="password" id="dp-password" placeholder="SSH пароль root">
+    </div>
+    <div class="row">
+      <button id="dp-start" class="ok" style="flex:1">Развернуть агент</button>
+    </div>
+    <ul id="dp-steps" class="steps"></ul>
     <div class="row">
       <button id="servers-close" class="secondary" style="flex:1;margin-top:12px">Закрыть</button>
     </div>
@@ -361,6 +385,68 @@ $("#sv-add").addEventListener("click", async () => {
     $("#servers-back").classList.remove("show");
     await refresh();
   } catch (e) { toast(e.message, true); }
+});
+
+function renderDeploySteps(steps) {
+  const ul = $("#dp-steps");
+  ul.innerHTML = "";
+  steps.forEach((s, i) => {
+    const li = document.createElement("li");
+    const icon = s.ok ? '<span class="dot-ok">&#10003;</span>' : '<span class="dot-err">&#10007;</span>';
+    li.innerHTML = icon + '<span>' + esc(s.msg) + '</span>';
+    ul.appendChild(li);
+  });
+}
+
+async function pollDeploy(id) {
+  try {
+    const d = await api("GET", "/api/deploy/" + q(id));
+    renderDeploySteps(d.steps || []);
+    if (d.status === "done") {
+      toast("Агент развёрнут: " + d.result.url);
+      await loadServers();
+      if (d.result.server_id) {
+        try { await api("POST", "/api/servers/" + q(d.result.server_id) + "/ping"); } catch (e) {}
+        const sel = $("#server-select");
+        sel.value = d.result.server_id;
+        currentServer = d.result.server_id;
+      }
+      await refresh();
+      $("#dp-start").disabled = false;
+      $("#dp-start").textContent = "Развернуть агент";
+      return;
+    }
+    if (d.status === "error") {
+      $("#dp-start").disabled = false;
+      $("#dp-start").textContent = "Развернуть агент";
+      return;
+    }
+    setTimeout(() => pollDeploy(id), 2000);
+  } catch (e) {
+    toast("Ошибка деплоя: " + e.message, true);
+    $("#dp-start").disabled = false;
+    $("#dp-start").textContent = "Развернуть агент";
+  }
+}
+
+$("#dp-start").addEventListener("click", async () => {
+  const name = $("#dp-name").value.trim() || $("#dp-host").value.trim();
+  const host = $("#dp-host").value.trim();
+  const user = $("#dp-user").value.trim() || "root";
+  const port = parseInt($("#dp-port").value || "22", 10);
+  const password = $("#dp-password").value;
+  if (!host || !password) { toast("Укажите хост и SSH-пароль", true); return; }
+  $("#dp-steps").innerHTML = "";
+  $("#dp-start").disabled = true;
+  $("#dp-start").textContent = "Развёртывание…";
+  try {
+    const r = await api("POST", "/api/deploy", { name, host, user, port, password });
+    pollDeploy(r.id);
+  } catch (e) {
+    toast("Не удалось запустить деплой: " + e.message, true);
+    $("#dp-start").disabled = false;
+    $("#dp-start").textContent = "Развернуть агент";
+  }
 });
 
 $("#add-btn").addEventListener("click", async () => {

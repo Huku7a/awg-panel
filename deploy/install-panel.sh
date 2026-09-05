@@ -143,7 +143,8 @@ RestartSec=3
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable --now "${SERVICE}.service"
+systemctl enable "${SERVICE}.service" >/dev/null
+systemctl restart "${SERVICE}.service"   # restart picks up credentials from EnvironmentFile
 sleep 2
 systemctl is-active --quiet "${SERVICE}.service" || {
   echo -e "${RED}service failed to start:${NC}"

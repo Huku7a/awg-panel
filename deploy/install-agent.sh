@@ -54,7 +54,8 @@ chmod 600 "${CONF_DIR}/agent-config"
 echo "== systemd service =="
 cp "${APP_DIR}/deploy/agent.service" "/etc/systemd/system/${SERVICE}"
 systemctl daemon-reload
-systemctl enable --now "${SERVICE}"
+systemctl enable "${SERVICE}" >/dev/null
+systemctl restart "${SERVICE}"   # restart picks up the new token in EnvironmentFile
 sleep 2
 systemctl is-active --quiet "${SERVICE}" || { echo -e "${RED}Service failed to start${NC}"; journalctl -u "${SERVICE}" -n 20 --no-pager; exit 1; }
 
