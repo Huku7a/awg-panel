@@ -9,8 +9,8 @@ without Docker: it edits `/etc/amnezia/amneziawg/awg0.conf` and applies changes 
 - `stats.py` — traffic/connection statistics: SQLite store (`buckets` hourly, `peers` monotonic totals, `events` reboots), `sampler_worker()` (runs in both apps' lifespan), `report()`. Stdlib only, no new deps.
 - `app.py` — panel on `:5182`. Basic-auth UI + JSON API, proxies client ops to agents over HTTP with `X-Api-Key`, owns the background tasks (agent deploy, panel self-update, awg update). `/api/stats` serves the local DB or merges agent reports for `server=all`.
 - `agent.py` — per-VDS agent on `:5183`. Bearer-token auth (`X-Api-Key`, `hmac.compare_digest`), background apt-refresh loop.
-- `deployer.py` — installs the agent on a fresh VDS via paramiko/SFTP; pins SSH host keys (TOFU) in `/etc/awg-panel/known-hosts.json`.
-- `updater.py` + `deploy/upgrade-panel.sh` — panel self-update from GitHub Releases (SHA-256 check, MANIFEST-driven in-place swap, pip reinstall, rollback).
+- `deployer.py` — installs the agent on a fresh VDS via paramiko/SFTP; pins SSH host keys (TOFU) in `/etc/awg-panel/known-hosts.json`. On the first password login it appends the panel's own ed25519 key (`/etc/awg-panel/id_ed25519`) to the node's `authorized_keys`, so later deploys/updates are passwordless — `deploy_agent(password="")` uses the key and fails with a user-facing message if the node rejects it. Returns `{"auth", "key_installed"}`; `app.py` stores `ssh.key` in `servers.json`.
+- `updater.py` + `deploy/upgrade-panel.sh` — panel self-update from GitHub Releases (SHA-256 check, MANIFEST-driven in-place swap, pip reinstall, rollback). Panel-only: agents have no self-update, they are updated by re-running the deploy (`POST /api/servers/{id}/update`).
 - `templates/index.html` — single-file UI, no frontend build step. All user-facing strings/progress messages are Russian; don't translate them.
 
 ## No tests, no linters
@@ -30,7 +30,7 @@ AWG_AGENT_TOKEN=testtoken AWG_CONFIG_DIR=/tmp/awg-test venv/bin/uvicorn agent:ap
 ```
 Gotchas:
 - The panel SSRF guard rejects agent URLs on loopback/private/etc. IPs. To test a local agent, start the panel with `AWG_ALLOW_PRIVATE_AGENTS=1`.
-- `state.json` / `servers.json` / `stats.db*` are gitignored runtime data (someone's clients, agent creds, traffic history) — never commit or put them in a release bundle.
+- `state.json` / `servers.json` / `stats.db*` are gitignored runtime data (someone's clients, agent creds, traffic history) — never commit or put them in a release bundle. `core.save_state`/`save_servers` chmod them to `600`.
 - AWG counters reset on reboot and on peer re-creation, so `stats.py` stores *deltas* plus monotonic totals and a `boot_id` change; don't derive "traffic for a period" from current counters.
 
 ## Release / self-update

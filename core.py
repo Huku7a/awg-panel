@@ -193,6 +193,10 @@ def save_state(state: Dict):
     tmp = STATE_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False))
     tmp.replace(STATE_FILE)
+    try:
+        os.chmod(STATE_FILE, 0o600)
+    except OSError:
+        pass
 
 
 def load_servers() -> List[Dict]:
@@ -211,6 +215,27 @@ def save_servers(servers: List[Dict]):
     tmp = SERVERS_FILE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(servers, indent=2, ensure_ascii=False))
     tmp.replace(SERVERS_FILE)
+    # Agent API tokens (and, once deployed by key, no SSH secrets) live here:
+    # keep the file readable by root only.
+    try:
+        os.chmod(SERVERS_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def version() -> str:
+    """Version of the code tree this process was started from.
+
+    Read on every call so a re-deployed agent reports its new version without
+    needing a restart (updater.py/agent.py share this layout).
+    """
+    try:
+        v = (PANEL_DIR / "VERSION").read_text().strip()
+        if v:
+            return v
+    except OSError:
+        pass
+    return "0.0.0-dev"
 
 
 def find_free_ip(clients: List[Dict], state: Dict) -> Tuple[str, str]:

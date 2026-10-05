@@ -106,7 +106,7 @@ def health():
     params_ok = (core.CONFIG_DIR / "params").exists()
     config_ok = core.config_path().exists()
     return {"ok": params_ok and config_ok, "config": config_ok, "params": params_ok,
-            "interface": core.iface()}
+            "interface": core.iface(), "version": core.version()}
 
 
 @app.get("/api/awg/status")

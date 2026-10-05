@@ -113,8 +113,14 @@ def public_servers() -> List[Dict]:
             "name": s["name"],
             "url": s["url"],
             "is_local": False,
+            "has_key": bool((s.get("ssh") or {}).get("key")),
         })
     return out
+
+
+def server_host(server: Dict) -> str:
+    """Host part of a node URL (used as the SSH target)."""
+    return server["url"].split("//", 1)[-1].split("/", 1)[0].split(":", 1)[0]
 
 
 def find_server(server_id: str) -> Optional[Dict]:
@@ -366,16 +372,19 @@ def panel_public_ip() -> str:
         return ""
 
 
-def register_server(name: str, url: str, token: str) -> str:
+def register_server(name: str, url: str, token: str,
+                    user: str = "root", port: int = 22, key_installed: bool = False) -> str:
     servers = core.load_servers()
     url = url.rstrip("/")
     for s in servers:
         if s["url"].rstrip("/") == url:
             s["name"] = name
             s["token"] = token
+            s["ssh"] = {"user": user, "port": port, "key": bool(key_installed)}
             core.save_servers(servers)
             return s["id"]
-    new = {"id": uuid.uuid4().hex, "name": name, "url": url, "token": token}
+    new = {"id": uuid.uuid4().hex, "name": name, "url": url, "token": token,
+           "ssh": {"user": user, "port": port, "key": bool(key_installed)}}
     servers.append(new)
     core.save_servers(servers)
     logger.info("Registered server %s (%s)", name, url)
@@ -385,18 +394,21 @@ def register_server(name: str, url: str, token: str) -> str:
 def _run_deploy(did: str, body: "DeployRequest"):
     d = deployments[did]
     try:
-        token = (body.token or "").strip() or secrets.token_hex(16)
-        deployer.deploy_agent(
-            host=body.host.strip(),
-            user=body.user.strip() or "root",
-            password=body.password,
-            token=token,
-            panel_ip=panel_public_ip(),
-            port=body.port,
-            steps=d["steps"],
-        )
+        with DEPLOY_LOCK:
+            token = (body.token or "").strip() or secrets.token_hex(16)
+            res = deployer.deploy_agent(
+                host=body.host.strip(),
+                user=body.user.strip() or "root",
+                token=token,
+                panel_ip=panel_public_ip(),
+                port=body.port,
+                steps=d["steps"],
+                password=body.password or "",
+            )
         url = f"http://{body.host.strip()}:5183"
-        server_id = register_server(body.name.strip(), url, token)
+        server_id = register_server(body.name.strip(), url, token,
+                                    user=body.user.strip() or "root", port=body.port,
+                                    key_installed=res.get("key_installed", False))
         d["steps"].append({"msg": "Сервер добавлен в панель", "ok": True})
         d.update(status="done", result={"server_id": server_id, "url": url, "token": token}, done_at=time.time())
         logger.info("Deployment %s finished, server %s", did, server_id)
@@ -410,7 +422,8 @@ class DeployRequest(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     host: str = Field(min_length=1, max_length=200)
     user: str = Field(default="root", max_length=60)
-    password: str = Field(min_length=1, max_length=200)
+    # Optional: with the panel key installed on the node no password is needed.
+    password: str = Field(default="", max_length=200)
     port: int = Field(default=22, ge=1, le=65535)
     token: str = Field(default="", max_length=200)
 
@@ -431,6 +444,171 @@ def deploy_status(did: str):
     if not d:
         raise HTTPException(status_code=404, detail="Deployment not found")
     return d
+
+
+# ----------------------------------------------------------------------
+# Agent versions and one-click agent updates
+# ----------------------------------------------------------------------
+
+async def _probe_version(server: Dict) -> Dict:
+    """Version/health of one node. A node without a reported version (agent
+    predating 0.6.0) counts as outdated: it has no traffic statistics."""
+    out = {"id": server["id"], "name": server["name"], "ok": False,
+           "version": None, "outdated": False, "reason": "", "has_key":
+           bool((server.get("ssh") or {}).get("key"))}
+    try:
+        health = await agent_request("GET", server, "/api/health", timeout=8.0)
+    except HTTPException as e:
+        out["reason"] = str(e.detail)[:120]
+        return out
+    out["ok"] = bool(health.get("ok"))
+    ver = (health.get("version") or "").strip()
+    out["version"] = ver or None
+    if not ver:
+        out["outdated"] = True
+        out["reason"] = "агент не сообщает версию"
+    elif updater._is_newer(core.version(), ver):
+        out["outdated"] = True
+    return out
+
+
+@app.post("/api/servers/versions")
+async def server_versions():
+    """Panel version plus a version probe of every node, for the update badges."""
+    servers = [s for s in core.load_servers()]
+    probes = await asyncio.gather(*(_probe_version(s) for s in servers))
+    return {"panel_version": core.version(), "servers": list(probes)}
+
+
+def _update_one(did: str, server: Dict, password: str, prefix: str = ""):
+    """Re-deploy a single node with stored credentials (or a given password).
+
+    Returns None on success, or an error message.
+    """
+    d = deployments[did]
+    steps = _Prefixed(d["steps"], prefix)
+    ssh = server.get("ssh") or {}
+    token = server["token"]
+    try:
+        with DEPLOY_LOCK:
+            res = deployer.deploy_agent(
+                host=server_host(server),
+                user=ssh.get("user") or "root",
+                token=token,
+                panel_ip=panel_public_ip(),
+                port=int(ssh.get("port") or 22),
+                steps=steps,
+                password=password,
+            )
+        # Remember that this node now accepts the panel key (passwordless).
+        if res.get("key_installed"):
+            servers = core.load_servers()
+            for s in servers:
+                if s["id"] == server["id"]:
+                    s["ssh"] = {"user": ssh.get("user") or "root",
+                                "port": int(ssh.get("port") or 22), "key": True}
+                    core.save_servers(servers)
+                    break
+        steps.append({"msg": "Готово", "ok": True})
+        return None
+    except Exception as e:
+        steps.append({"msg": f"ошибка: {e}", "ok": False})
+        logger.exception("Agent update failed for %s", server.get("name"))
+        return str(e)
+
+
+class _Prefixed(List[Dict]):
+    """List view that prefixes each appended step (used for batch updates)."""
+
+    def __init__(self, target: List[Dict], prefix: str):
+        super().__init__(target)
+        self._target = target
+        self._prefix = prefix
+
+    def append(self, item):  # type: ignore[override]
+        if self._prefix:
+            self._target.append({**item, "msg": f"{self._prefix}: {item['msg']}"})  # type: ignore[index]
+        else:
+            self._target.append(item)
+
+
+def _run_update(did: str, server_id: str, password: str):
+    d = deployments[did]
+    server = find_server(server_id)
+    if not server or server_id == "local":
+        d["steps"].append({"msg": "Узел не найден", "ok": False})
+        d.update(status="error", error="Server not found", done_at=time.time())
+        return
+    err = _update_one(did, server, password, "")
+    d.update(status="error" if err else "done",
+             result=None if err else {"server_id": server_id},
+             error=err, done_at=time.time())
+
+
+def _run_update_all(did: str, ids: List[str], password: str):
+    d = deployments[did]
+    ok = 0
+    last_err = ""
+    for sid in ids:
+        server = find_server(sid)
+        if not server:
+            continue
+        name = server["name"]
+        d["steps"].append({"msg": f"{name}: обновление…", "ok": True})
+        err = _update_one(did, server, password, name)
+        if err:
+            last_err = err
+        else:
+            ok += 1
+    failed = len(ids) - ok
+    d["steps"].append({"msg": f"Обновлено {ok} из {len(ids)}"
+                                 + (f", с ошибкой {failed}" if failed else ""),
+                       "ok": failed == 0})
+    d.update(status="done" if ok else "error",
+             result={"updated": ok, "failed": failed},
+             error=None if ok else last_err, done_at=time.time())
+
+
+class UpdateRequest(BaseModel):
+    # Only needed for a node the panel has no passwordless access to yet.
+    password: str = Field(default="", max_length=200)
+
+
+@app.post("/api/servers/{server_id}/update", status_code=202)
+def update_server(server_id: str, body: Optional[UpdateRequest] = None):
+    server = find_server(server_id)
+    if not server or server_id == "local":
+        raise HTTPException(status_code=404, detail="Server not found")
+    _prune_tasks(deployments)
+    did = uuid.uuid4().hex
+    deployments[did] = {"status": "running", "steps": [], "result": None, "error": None, "done_at": 0}
+    password = (body.password if body else "") or ""
+    threading.Thread(target=_run_update, args=(did, server_id, password), daemon=True).start()
+    return {"id": did}
+
+
+@app.post("/api/servers/update-all", status_code=202)
+async def update_all_servers(body: Optional[UpdateRequest] = None):
+    """Update every outdated node, decided server-side from a fresh probe.
+
+    Nodes that report a current version (or are merely unreachable) are left
+    alone: re-deploying them would only restart a healthy agent.
+    """
+    _prune_tasks(deployments)
+    servers = core.load_servers()
+    probes = await asyncio.gather(*(_probe_version(s) for s in servers))
+    outdated = [p for p in probes if p["outdated"]]
+    if not outdated:
+        raise HTTPException(status_code=400, detail="Все агенты актуальны")
+    names = {p["id"]: p["name"] for p in probes}
+    did = uuid.uuid4().hex
+    deployments[did] = {"status": "running", "steps": [], "result": None, "error": None, "done_at": 0}
+    ids = [p["id"] for p in outdated]
+    logger.info("update-all %s: %s", did[:8], [names[i] for i in ids])
+    password = (body.password if body else "") or ""
+    threading.Thread(target=_run_update_all, args=(did, ids, password), daemon=True).start()
+    return {"id": did, "servers": len(ids),
+            "targets": [names[i] for i in ids]}
 
 
 # ----------------------------------------------------------------------

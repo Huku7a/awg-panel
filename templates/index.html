@@ -63,6 +63,10 @@
   .servers-bar select { min-width: 260px; }
   .server-tag { font-size: 12px; color: var(--muted); padding: 2px 9px; border: 1px solid var(--border); border-radius: 20px; }
   .server-tag.connected { color: var(--ok); border-color: rgba(52,199,123,.4); }
+  .upd-tag { font-size: 11px; padding: 1px 8px; border-radius: 20px; border: 1px solid transparent; white-space: nowrap; }
+  .upd-tag.ok { color: var(--muted); border-color: var(--border); }
+  .upd-tag.warn { color: var(--warn, #e8a33d); border-color: rgba(232,163,61,.45); background: rgba(232,163,61,.08); }
+  .upd-tag.down { color: var(--danger, #e5484d); border-color: rgba(229,72,77,.45); background: rgba(229,72,77,.08); }
   #toast {
     position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
     background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
@@ -225,6 +229,7 @@
           <option value="local">Локальный сервер</option>
         </select>
         <span id="server-status" class="server-tag">—</span>
+        <span id="head-version" class="upd-tag ok" style="display:none"></span>
         <button id="ping-btn" class="secondary sm" style="padding:8px 12px">Проверить</button>
         <button id="servers-btn" class="secondary sm" style="padding:8px 12px">Управлять серверами</button>
       </div>
@@ -324,7 +329,15 @@
       </div>
 
       <div class="tab-panel active" id="tab-servers">
+      <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span id="sv-summary" class="muted"></span>
+        <button id="sv-update-all" class="secondary sm" style="display:none">Обновить все устаревшие</button>
+      </div>
       <ul class="server-list" id="server-list"></ul>
+      <div class="steps" id="sv-steps-box" style="display:none;margin:10px 0 4px">
+        <div class="muted" style="margin-bottom:4px">Ход обновления</div>
+        <ul class="steps" id="sv-steps"></ul>
+      </div>
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:12px">
         <label>Имя сервера</label>
         <input type="text" id="sv-name" placeholder="Например: VPS-2">
@@ -378,6 +391,8 @@ const $ = (s) => document.querySelector(s);
 let clients = [];
 let servers = [];
 let currentServer = "local";
+// Per-node agent versions from POST /api/servers/versions, keyed by server id.
+let nodeVersions = { panel: "" };
 let serverTestResult = null;
 let searchQ = "";
 let sortKey = "name";
@@ -449,16 +464,141 @@ async function loadServers() {
   }
 }
 
+function versionBadge(id) {
+  const v = (nodeVersions[id] || {});
+  if (!v.probed) return "";
+  if (!v.ok) return '<span class="upd-tag down" title="узел недоступен">недоступен</span>';
+  if (v.outdated) {
+    const t = v.version ? esc(v.version) + " → " + esc(nodeVersions.panel || "") : "старая версия";
+    return '<span class="upd-tag warn" title="нажмите «Обновить»">требуется обновление · ' + t + '</span>';
+  }
+  return '<span class="upd-tag ok" title="актуальная версия">' + esc(v.version || "") + '</span>';
+}
+
 function renderServerList() {
   const ul = $("#server-list");
   ul.innerHTML = "";
+  const outdated = [];
   for (const s of servers) {
     const li = document.createElement("li");
-    li.innerHTML = `
-      <span><strong>${esc(s.name)}</strong><br><span class="muted mono">${esc(s.url) || "локальный"}</span></span>
-      ${s.is_local ? '<span class="muted">—</span>' : '<button class="sm danger" onclick="removeServer(\'' + q(s.id) + '\')">Удалить</button>'}`;
+    if (s.is_local) {
+      li.innerHTML = `
+        <span><strong>${esc(s.name)}</strong><br><span class="muted mono">локальный</span></span>
+        <span class="muted">панель ${esc(nodeVersions.panel || "")}</span>`;
+    } else {
+      const v = nodeVersions[s.id] || {};
+      if (v.outdated) outdated.push(s);
+      const upd = v.outdated
+        ? '<button class="sm secondary" onclick="updateAgent(\'' + q(s.id) + '\')">Обновить</button> '
+        : '';
+      li.innerHTML = `
+        <span><strong>${esc(s.name)}</strong><br><span class="muted mono">${esc(s.url)}</span>
+          <br>${versionBadge(s.id)}</span>
+        <span>${upd}<button class="sm danger" onclick="removeServer(\'' + q(s.id) + '\')">Удалить</button></span>`;
+    }
     ul.appendChild(li);
   }
+  const btn = $("#sv-update-all");
+  btn.style.display = outdated.length ? "" : "none";
+  btn.textContent = "Обновить все устаревшие (" + outdated.length + ")";
+  const sum = $("#sv-summary");
+  const probed = servers.filter((s) => !s.is_local && (nodeVersions[s.id] || {}).probed).length;
+  sum.textContent = probed
+    ? "Проверено узлов: " + probed + " · устаревших: " + outdated.length
+    : "проверка версий…";
+}
+
+async function probeVersions() {
+  try {
+    const r = await api("POST", "/api/servers/versions");
+    nodeVersions.panel = r.panel_version;
+    for (const s of r.servers || []) {
+      nodeVersions[s.id] = { probed: true, ok: s.ok, version: s.version, outdated: s.outdated };
+    }
+  } catch (e) {
+    nodeVersions.panel = nodeVersions.panel || "";
+  }
+  renderServerList();
+  renderHeadVersion();
+}
+
+function renderHeadVersion() {
+  const tag = $("#head-version");
+  const v = nodeVersions[currentServer];
+  if (currentServer === "local") {
+    tag.className = "upd-tag ok";
+    tag.textContent = "панель " + (nodeVersions.panel || "");
+    tag.style.display = "";
+    return;
+  }
+  if (!v || !v.probed) { tag.style.display = "none"; return; }
+  tag.style.display = "";
+  if (!v.ok) { tag.className = "upd-tag down"; tag.textContent = "недоступен"; return; }
+  if (v.outdated) {
+    tag.className = "upd-tag warn";
+    tag.textContent = "требуется обновление · " + (v.version || "старая версия");
+  } else {
+    tag.className = "upd-tag ok";
+    tag.textContent = "агент " + (v.version || "");
+  }
+}
+
+function startUpdateWatch(id, label) {
+  const tick = async () => {
+    try {
+      const d = await api("GET", "/api/deploy/" + q(id));
+      renderSteps($("#sv-steps"), d.steps || []);
+      if (d.status === "running") { setTimeout(tick, 2000); return; }
+      if (d.status === "done") {
+        toast(label + ": обновлено");
+        await loadServers();
+        await probeVersions();
+        await refresh();
+      } else {
+        toast(label + ": ошибка — " + (d.error || "см. шаги"), true);
+        await probeVersions();
+      }
+    } catch (e) {
+      toast("Ошибка обновления: " + e.message, true);
+    }
+  };
+  $("#sv-steps").innerHTML = "";
+  $("#sv-steps-box").style.display = "";
+  showTab($("#servers-scope"), "tab-servers");
+  $("#servers-back").classList.add("show");
+  setTimeout(tick, 500);
+}
+
+async function updateAgent(id) {
+  const s = servers.find((x) => x.id === id);
+  if (!s) return;
+  if (!confirm("Обновить агент на «" + s.name + "» до " + (nodeVersions.panel || "новой версии") + "?\nАгент на несколько секунд перезапустится.")) return;
+  let password = "";
+  if (!s.has_key) {
+    password = prompt("На узле «" + s.name + "» панель ещё не настроила беспарольный доступ.\nВведите пароль root — он не сохранится, доступ запомнится по ключу панели:", "");
+    if (password === null) return;
+  }
+  try {
+    const r = await api("POST", "/api/servers/" + q(id) + "/update", { password });
+    startUpdateWatch(r.id, s.name);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function updateAllAgents() {
+  const outdated = servers.filter((s) => !s.is_local && (nodeVersions[s.id] || {}).outdated);
+  if (!outdated.length) return;
+  const noKey = outdated.filter((s) => !s.has_key);
+  if (!confirm("Обновить узлы: " + outdated.map((s) => s.name).join(", ") + "?\nАгенты на несколько секунд перезапустятся.")) return;
+  let password = "";
+  if (noKey.length) {
+    const who = noKey.map((s) => s.name).join(", ");
+    password = prompt("Для узлов без беспарольного доступа (" + who + ") введите пароль root.\nОн не сохранится — доступ запомнится по ключу панели:", "");
+    if (password === null) return;
+  }
+  try {
+    const r = await api("POST", "/api/servers/update-all", { password });
+    startUpdateWatch(r.id, "Узлы (" + (r.targets || []).length + ")");
+  } catch (e) { toast(e.message, true); }
 }
 
 async function removeServer(id) {
@@ -569,6 +709,7 @@ $("#server-select").addEventListener("change", () => {
   currentServer = $("#server-select").value;
   pingCurrent();
   refresh();
+  renderHeadVersion();
   // The stats scope "Выбранный сервер" follows the global server selector.
   if (statsScope === "server" && $("#tab-stats").classList.contains("active")) loadStats();
 });
@@ -600,8 +741,11 @@ $("#servers-btn").addEventListener("click", () => {
   serverTestResult = null;
   showTab($("#servers-scope"), "tab-servers");
   $("#servers-back").classList.add("show");
+  probeVersions();
   loadAwgStatus(false);
 });
+
+$("#sv-update-all").addEventListener("click", updateAllAgents);
 
 $("#servers-close").addEventListener("click", () => $("#servers-back").classList.remove("show"));
 $("#servers-back").addEventListener("click", (e) => { if (e.target === $("#servers-back")) $("#servers-back").classList.remove("show"); });
@@ -1384,6 +1528,7 @@ loadServers().then(() => {
   loadUpdateStatus();
   pingCurrent();
   refresh();
+  probeVersions();
   let savedTab = "";
   try { savedTab = localStorage.getItem("awg.tab") || ""; } catch (e) {}
   if (savedTab === "tab-stats") showTab($("#main-scope"), "tab-stats");
@@ -1392,6 +1537,8 @@ setInterval(() => {
   pingCurrent();
   refresh();
 }, 10000);
+// Agent version badges drive the update hints, so refresh them periodically.
+setInterval(probeVersions, 30000);
 </script>
 </body>
 </html>
