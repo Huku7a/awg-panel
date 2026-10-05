@@ -10,15 +10,16 @@ import socket
 import threading
 import time
 import uuid
-from typing import Dict, List, Optional
-from urllib.parse import urlsplit
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlencode, urlsplit
 
 import core
 import deployer
 import httpx
+import stats
 import updater
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -37,11 +38,17 @@ ALLOW_PRIVATE_AGENTS = os.environ.get("AWG_ALLOW_PRIVATE_AGENTS", "") == "1"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    worker = asyncio.create_task(updater.updater_worker())
+    tasks = [asyncio.create_task(updater.updater_worker())]
+    if core.config_path().exists():
+        # This host manages its own AmneziaWG, so it samples its own history.
+        tasks.append(asyncio.create_task(stats.sampler_worker()))
+    else:
+        logger.info("Local AWG config not found - local stats sampler is disabled")
     try:
         yield
     finally:
-        worker.cancel()
+        for t in tasks:
+            t.cancel()
 
 
 app = FastAPI(title="AWG Panel", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -655,3 +662,180 @@ async def delete_client(name: str, server: str = "local"):
         except RuntimeError as e:
             raise HTTPException(status_code=500, detail=str(e))
     return await agent_request("DELETE", s, f"/api/clients/{name}")
+
+
+# ----------------------------------------------------------------------
+# Traffic / connection statistics
+#
+# Every node owns its own history DB (see stats.py), so the panel only
+# proxies report queries: one node, or a merged summary across all nodes.
+# ----------------------------------------------------------------------
+
+def _stats_query(days: int, from_ts: Optional[float], to_ts: Optional[float],
+                 granularity: str, client: str, refresh: int) -> str:
+    params: Dict = {"days": days, "granularity": granularity}
+    if from_ts is not None:
+        params["from"] = from_ts
+    if to_ts is not None:
+        params["to"] = to_ts
+    if client:
+        params["client"] = client
+    if refresh:
+        params["refresh"] = 1
+    return urlencode(params)
+
+
+async def _local_stats(days: int, from_ts: Optional[float], to_ts: Optional[float],
+                       granularity: str, client: str, refresh: int) -> Dict:
+    if refresh:
+        try:
+            await asyncio.to_thread(stats.sample_now)
+        except Exception as e:
+            logger.warning("forced local stats sample failed: %s", e)
+    return await asyncio.to_thread(
+        stats.report, from_ts=from_ts, to_ts=to_ts, days=days,
+        granularity=granularity, client=client)
+
+
+def _merge_reports(items: List[Tuple[str, Dict]], errors: List[Dict]) -> Dict:
+    """Combine per-node reports into one: sum traffic/uptime per client name,
+    union the bucket series, and surface unreachable nodes in `errors`."""
+    series: Dict[int, Dict] = {}
+    clients: Dict[str, Dict] = {}
+    for server_name, rep in items:
+        for row in rep.get("series") or []:
+            ts = int(row.get("ts") or 0)
+            b = series.setdefault(ts, {"ts": ts, "rx": 0, "tx": 0, "online_sec": 0.0})
+            b["rx"] += int(row.get("rx") or 0)
+            b["tx"] += int(row.get("tx") or 0)
+            b["online_sec"] += float(row.get("online_sec") or 0)
+        for row in rep.get("clients") or []:
+            key = row.get("name") or row.get("public_key")
+            c = clients.get(key)
+            if c is None:
+                c = clients[key] = {
+                    "name": row.get("name") or key,
+                    "public_key": row.get("public_key", ""),
+                    "ipv4": row.get("ipv4", ""),
+                    "enabled": False, "online": False, "present": False,
+                    "last_handshake": 0,
+                    "rx": 0, "tx": 0, "online_sec": 0.0, "sessions": 0,
+                    "total_rx": 0, "total_tx": 0, "resets": 0,
+                    "servers": [],
+                }
+            for f in ("rx", "tx", "sessions", "total_rx", "total_tx", "resets"):
+                c[f] += int(row.get(f) or 0)
+            c["online_sec"] += float(row.get("online_sec") or 0)
+            c["enabled"] = c["enabled"] or bool(row.get("enabled"))
+            c["online"] = c["online"] or bool(row.get("online"))
+            c["present"] = c["present"] or bool(row.get("present"))
+            c["last_handshake"] = max(c["last_handshake"], int(row.get("last_handshake") or 0))
+            if row.get("ipv4"):
+                c["ipv4"] = row["ipv4"]
+            if server_name not in c["servers"]:
+                c["servers"].append(server_name)
+
+    rows = list(clients.values())
+    for r in rows:
+        r["online_sec"] = round(r["online_sec"], 1)
+        r["rx_h"] = core.human_bytes(r["rx"])
+        r["tx_h"] = core.human_bytes(r["tx"])
+        r["total_h"] = core.human_bytes(r["total_rx"] + r["total_tx"])
+    rows.sort(key=lambda r: (r["rx"] + r["tx"]), reverse=True)
+    rows.sort(key=lambda r: not r["present"])
+
+    def _min(getter):
+        vals = [getter(rep) for _, rep in items if getter(rep) is not None]
+        return min(vals) if vals else None
+
+    def _max(getter):
+        vals = [getter(rep) for _, rep in items if getter(rep) is not None]
+        return max(vals) if vals else None
+
+    reboots = sum(int((rep.get("events") or {}).get("reboots") or 0) for _, rep in items)
+    last_reboot = _max(lambda rep: (rep.get("events") or {}).get("last_reboot"))
+    boot_total = sum(int((rep.get("events") or {}).get("boot_total") or 0) for _, rep in items)
+    return {
+        "from": _min(lambda rep: rep.get("from")),
+        "to": _max(lambda rep: rep.get("to")),
+        "granularity": "day" if any(rep.get("granularity") == "day" for _, rep in items) else "hour",
+        "retention_days": min(int(rep.get("retention_days") or 30) for _, rep in items),
+        "interval": max(int(rep.get("interval") or 60) for _, rep in items),
+        "truncated": any(bool(rep.get("truncated")) for _, rep in items),
+        "merged": True,
+        "servers": [name for name, _ in items],
+        "coverage": {
+            "first_sample": _min(lambda rep: (rep.get("coverage") or {}).get("first_sample")),
+            "last_sample": _max(lambda rep: (rep.get("coverage") or {}).get("last_sample")),
+        },
+        "totals": {
+            "rx": sum(r["rx"] for r in rows),
+            "tx": sum(r["tx"] for r in rows),
+            "online_sec": round(sum(r["online_sec"] for r in rows), 1),
+            "sessions": sum(r["sessions"] for r in rows),
+            "clients": len(rows),
+        },
+        "events": {"reboots": reboots, "last_reboot": last_reboot, "boot_total": boot_total},
+        "series": [series[k] for k in sorted(series)],
+        "clients": rows,
+        "client": None,
+        "errors": errors,
+    }
+
+
+@app.get("/api/stats")
+async def get_stats(server: str = "local", days: int = 7,
+                    from_: Optional[float] = Query(None, alias="from"),
+                    to: Optional[float] = None, granularity: str = "auto",
+                    client: str = "", refresh: int = 0):
+    """Traffic / uptime / sessions per client for a period.
+    `server` is a node id, "local", or "all" for a merged summary."""
+    qs = _stats_query(days, from_, to, granularity, client, refresh)
+
+    if server == "local":
+        try:
+            return await _local_stats(days, from_, to, granularity, client, refresh)
+        except stats.StatsError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("local stats report failed")
+            raise HTTPException(status_code=500, detail=f"Не удалось собрать статистику: {e}")
+
+    if server == "all":
+        servers = core.load_servers()
+        coros: List = []
+        names: List[str] = []
+        if core.config_path().exists():
+            coros.append(_local_stats(days, from_, to, granularity, client, refresh))
+            names.append("Локальный сервер")
+        for s in servers:
+            coros.append(_agent_retry("GET", s, f"/api/stats?{qs}", timeout=20))
+            names.append(s["name"])
+        if not coros:
+            raise HTTPException(status_code=400, detail="Нет серверов для сводной статистики")
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        items: List[Tuple[str, Dict]] = []
+        errors: List[Dict] = []
+        for name, res in zip(names, results):
+            if isinstance(res, BaseException):
+                detail = res.detail if isinstance(res, HTTPException) else str(res)
+                logger.warning("stats: node %s failed: %s", name, detail)
+                errors.append({"server": name, "detail": detail})
+            else:
+                items.append((name, res))
+        if not items:
+            detail = "; ".join(f"{e['server']}: {e['detail']}" for e in errors)
+            raise HTTPException(status_code=502, detail=f"Статистика недоступна ({detail})")
+        return _merge_reports(items, errors)
+
+    s = find_server(server)
+    if not s:
+        raise HTTPException(status_code=404, detail="Server not found")
+    try:
+        return await _agent_retry("GET", s, f"/api/stats?{qs}", timeout=20)
+    except HTTPException as e:
+        if e.status_code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail="Агент не поддерживает статистику — обновите агента на узле")
+        raise

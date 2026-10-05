@@ -26,7 +26,7 @@ PKG="${DIST}/awg-panel-${VER}"
 rm -rf "${DIST}"
 mkdir -p "${PKG}"
 
-for item in app.py agent.py core.py updater.py deployer.py \
+for item in app.py agent.py core.py stats.py updater.py deployer.py \
             requirements.txt VERSION README.md LICENSE templates deploy; do
   if [ -e "${APP_DIR}/${item}" ]; then
     cp -a "${APP_DIR}/${item}" "${PKG}/${item}"

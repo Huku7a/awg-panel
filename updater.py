@@ -42,7 +42,7 @@ SERVICE_NAME = os.environ.get("AWG_SERVICE_NAME", "awg-panel")
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
 _ASSET_RE = re.compile(r"^awg-panel-(\d+\.\d+\.\d+)\.tar\.gz$")
 _PAYLOAD_REQUIRED = (
-    "app.py", "core.py", "updater.py", "deployer.py",
+    "app.py", "core.py", "stats.py", "updater.py", "deployer.py",
     "requirements.txt", "VERSION", "MANIFEST", "templates/index.html",
 )
 

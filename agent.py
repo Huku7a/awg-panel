@@ -7,10 +7,11 @@ import logging
 import threading
 import uuid
 from contextlib import asynccontextmanager
-from typing import Dict
+from typing import Dict, Optional
 
 import core
-from fastapi import FastAPI, HTTPException, Request
+import stats
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -59,8 +60,12 @@ async def _apt_worker():
 async def lifespan(app: FastAPI):
     _refresh_event.set()  # do an initial refresh on startup
     task = asyncio.create_task(_apt_worker())
+    # The agent owns its own traffic/connection history, so it keeps sampling
+    # while the panel is offline or being updated.
+    stats_task = asyncio.create_task(stats.sampler_worker())
     yield
-    task.cancel()
+    for t in (task, stats_task):
+        t.cancel()
 
 
 app = FastAPI(title="AWG Agent", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -174,6 +179,29 @@ def awg_update_status(tid: str):
 @app.get("/api/clients")
 def list_clients():
     return core.client_full_list(core.load_state(), core.get_status())
+
+
+@app.get("/api/stats")
+def api_stats(days: int = 7,
+              from_: Optional[float] = Query(None, alias="from"),
+              to: Optional[float] = None,
+              granularity: str = "auto",
+              client: str = "",
+              refresh: int = 0):
+    """Traffic / uptime / session statistics for a period (default: last 7 days)."""
+    if refresh:
+        try:
+            stats.sample_now()
+        except Exception as e:
+            logger.warning("forced stats sample failed: %s", e)
+    try:
+        return stats.report(from_ts=from_, to_ts=to, days=days,
+                            granularity=granularity, client=client)
+    except stats.StatsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("stats report failed")
+        raise HTTPException(status_code=500, detail=f"Не удалось собрать статистику: {e}")
 
 
 @app.get("/api/clients/{name}/config", response_class=Response)

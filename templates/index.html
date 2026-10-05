@@ -151,6 +151,42 @@
   .update-pop .row { margin-top: 10px; }
   .update-err { color: var(--off); font-size: 12px; margin-top: 8px; }
   .update-ok-note { color: var(--ok); font-size: 12px; margin-top: 8px; }
+  .main-tabs { margin: 14px 0 16px; }
+  .stats-controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .stats-controls select { min-width: 170px; flex: 0 0 auto; }
+  .stats-controls input[type=datetime-local] {
+    min-width: 0; flex: 0 0 auto; width: 190px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 9px 12px; font-size: 14px; color-scheme: dark;
+  }
+  .stats-controls input:disabled { opacity: .45; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: rgba(91,140,255,.14); border: 1px solid rgba(91,140,255,.4);
+    color: var(--text); border-radius: 20px; padding: 4px 6px 4px 12px; font-size: 12px;
+  }
+  .chip button {
+    background: transparent; border: 0; color: var(--muted); cursor: pointer;
+    padding: 0 4px; font-size: 14px; line-height: 1;
+  }
+  .chip button:hover { color: var(--off); }
+  .stat-summary { display: flex; gap: 22px; flex-wrap: wrap; margin: 14px 0 4px; }
+  .stat-summary div { min-width: 92px; }
+  .stat-summary .val { font-size: 17px; font-weight: 600; }
+  .stat-summary .cap { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .stat-note { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
+  .stat-warn { font-size: 12px; color: var(--warn); margin: 8px 0 0; }
+  .chart-legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  .chart-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .chart-legend i.rx { background: var(--ok); }
+  .chart-legend i.tx { background: var(--accent); }
+  #stats-chart { margin-top: 14px; }
+  #stats-chart svg { width: 100%; height: auto; display: block; }
+  .chart-axis { font-size: 10px; fill: var(--muted); }
+  .traffic-bar { height: 4px; background: var(--bg); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .traffic-bar i { display: block; height: 100%; background: var(--accent); }
+  .table-scroll { overflow-x: auto; }
+  .st-sub { font-size: 11px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -195,34 +231,69 @@
     </div>
   </div>
 
-  <div class="card">
-    <h2>Новый клиент</h2>
-    <div class="row">
-      <input type="text" id="name" placeholder="Имя клиента (1-15 симв.: a-z, 0-9, _ -)">
-      <button id="add-btn">Добавить клиента</button>
-    </div>
+  <div id="main-scope">
+  <div class="tabs main-tabs" id="main-tabs" data-tabs="main-scope">
+    <button class="tab active" data-tab="tab-clients">Клиенты</button>
+    <button class="tab" data-tab="tab-stats">Статистика</button>
   </div>
 
-  <div class="card">
-    <h2>Клиенты</h2>
-    <div class="search-row">
-      <input type="text" id="client-search" placeholder="Поиск: имя, IP, endpoint…">
-      <span id="client-count" class="muted"></span>
+  <div class="tab-panel active" id="tab-clients">
+      <div class="card">
+        <h2>Новый клиент</h2>
+        <div class="row">
+          <input type="text" id="name" placeholder="Имя клиента (1-15 симв.: a-z, 0-9, _ -)">
+          <button id="add-btn">Добавить клиента</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Клиенты</h2>
+        <div class="search-row">
+          <input type="text" id="client-search" placeholder="Поиск: имя, IP, endpoint…">
+          <span id="client-count" class="muted"></span>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="name">Имя<span class="arr"></span></th>
+              <th class="sortable" data-sort="ipv4">IPv4<span class="arr"></span></th>
+              <th class="sortable" data-sort="status">Статус<span class="arr"></span></th>
+              <th class="sortable" data-sort="endpoint">Подключение<span class="arr"></span></th>
+              <th class="sortable" data-sort="rx">Rx / Tx<span class="arr"></span></th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="clients"></tbody>
+        </table>
+        <div id="empty" class="muted" style="padding:16px 0;text-align:center">Загрузка…</div>
+      </div>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th class="sortable" data-sort="name">Имя<span class="arr"></span></th>
-          <th class="sortable" data-sort="ipv4">IPv4<span class="arr"></span></th>
-          <th class="sortable" data-sort="status">Статус<span class="arr"></span></th>
-          <th class="sortable" data-sort="endpoint">Подключение<span class="arr"></span></th>
-          <th class="sortable" data-sort="rx">Rx / Tx<span class="arr"></span></th>
-          <th>Действия</th>
-        </tr>
-      </thead>
-      <tbody id="clients"></tbody>
-    </table>
-    <div id="empty" class="muted" style="padding:16px 0;text-align:center">Загрузка…</div>
+
+    <div class="tab-panel" id="tab-stats">
+      <div class="card">
+        <h2>Статистика подключений и трафика</h2>
+        <div class="stats-controls">
+          <select id="stats-scope">
+            <option value="server">Выбранный сервер</option>
+            <option value="all">Все серверы</option>
+          </select>
+          <select id="stats-period">
+            <option value="24h">За 24 часа</option>
+            <option value="7d" selected>За 7 дней</option>
+            <option value="30d">За 30 дней</option>
+            <option value="custom">Произвольный срок</option>
+          </select>
+          <input type="datetime-local" id="stats-from" disabled>
+          <input type="datetime-local" id="stats-to" disabled>
+          <button id="stats-refresh">Обновить</button>
+          <button id="stats-csv" class="secondary">Экспорт CSV</button>
+        </div>
+        <div id="stats-filter-row" style="margin-top:12px;display:none"></div>
+        <div id="stats-body">
+          <div class="muted" style="padding:16px 0;text-align:center">Откройте вкладку, чтобы собрать статистику.</div>
+        </div>
+      </div>
+    </div>
   </div>
 </main>
 
@@ -245,13 +316,14 @@
       <h3 style="margin:0">Серверы</h3>
       <button id="servers-close" class="secondary sm">Закрыть</button>
     </div>
-    <div class="tabs">
-      <button class="tab active" data-tab="tab-servers">Серверы</button>
-      <button class="tab" data-tab="tab-deploy">Развернуть агент</button>
-      <button class="tab" data-tab="tab-awg">AmneziaWG</button>
-    </div>
+    <div id="servers-scope">
+      <div class="tabs" data-tabs="servers-scope">
+        <button class="tab active" data-tab="tab-servers">Серверы</button>
+        <button class="tab" data-tab="tab-deploy">Развернуть агент</button>
+        <button class="tab" data-tab="tab-awg">AmneziaWG</button>
+      </div>
 
-    <div class="tab-panel active" id="tab-servers">
+      <div class="tab-panel active" id="tab-servers">
       <ul class="server-list" id="server-list"></ul>
       <div style="border-top:1px solid var(--border);margin-top:8px;padding-top:12px">
         <label>Имя сервера</label>
@@ -295,6 +367,7 @@
       </div>
       <div id="awg-upd" class="awg-status" style="display:none"><span class="spin"></span><span id="awg-upd-text"></span></div>
       <ul id="awg-steps" class="steps"></ul>
+      </div>
     </div>
   </div>
 </div>
@@ -471,6 +544,7 @@ function render() {
       <td class="muted">${c.endpoint ? esc(c.endpoint) : (c.enabled ? "не подключён" : "отключён")}</td>
       <td class="mono muted">${hb(c.rx)} / ${hb(c.tx)}<br><small>${c.enabled && !c.online ? "last: " + fmtHs(c.last_handshake) : ""}</small></td>
       <td><div class="actions">
+        <button class="sm secondary" onclick="openStatsFor('${esc(c.name)}')" title="Статистика клиента">Стат.</button>
         <button class="sm secondary" onclick="showQR('${esc(c.name)}')">QR</button>
         ${c.enabled
           ? `<button class="sm secondary" onclick="toggle('${esc(c.name)}', false)">Выкл</button>`
@@ -495,23 +569,36 @@ $("#server-select").addEventListener("change", () => {
   currentServer = $("#server-select").value;
   pingCurrent();
   refresh();
+  // The stats scope "Выбранный сервер" follows the global server selector.
+  if (statsScope === "server" && $("#tab-stats").classList.contains("active")) loadStats();
 });
 
 $("#ping-btn").addEventListener("click", pingCurrent);
 
-function showTab(name) {
-  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
-  document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === name));
+function showTab(scope, name) {
+  scope.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  scope.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === name));
+  if (scope.id === "main-scope") {
+    try { localStorage.setItem("awg.tab", name); } catch (e) {}
+    if (name === "tab-stats") loadStats();
+  }
 }
 
-document.querySelectorAll(".tab").forEach(btn => {
-  btn.addEventListener("click", () => showTab(btn.dataset.tab));
+document.querySelectorAll("[data-tabs]").forEach(bar => {
+  const scope = document.getElementById(bar.dataset.tabs);
+  bar.querySelectorAll(".tab").forEach(btn => {
+    btn.addEventListener("click", () => showTab(scope, btn.dataset.tab));
+  });
 });
+
+function activateMainTab(name) {
+  showTab($("#main-scope"), name);
+}
 
 $("#servers-btn").addEventListener("click", () => {
   renderServerList();
   serverTestResult = null;
-  showTab("tab-servers");
+  showTab($("#servers-scope"), "tab-servers");
   $("#servers-back").classList.add("show");
   loadAwgStatus(false);
 });
@@ -780,6 +867,259 @@ $("#qr-close").addEventListener("click", () => $("#qr-back").classList.remove("s
 $("#qr-back").addEventListener("click", (e) => { if (e.target === $("#qr-back")) $("#qr-back").classList.remove("show"); });
 
 // ----------------------------------------------------------------------
+// Traffic / connection statistics
+// ----------------------------------------------------------------------
+
+let statsData = null;
+let statsScope = "server";
+let statsPeriod = "7d";
+let statsFilter = "";
+let statsBusy = false;
+
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600),
+        m = Math.floor(sec % 3600 / 60), s = sec % 60;
+  if (d) return d + " д " + h + " ч";
+  if (h) return h + " ч " + m + " мин";
+  if (m) return m + " мин " + s + " с";
+  return s + " с";
+}
+
+function fmtTs(ts) {
+  if (!ts) return "—";
+  return new Date(ts * 1000).toLocaleString("ru-RU",
+    { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtBucket(ts, gran) {
+  const d = new Date(ts * 1000);
+  return gran === "day"
+    ? d.toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" })
+    : d.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function statsQuery() {
+  const p = new URLSearchParams();
+  p.set("server", statsScope === "all" ? "all" : currentServer);
+  if (statsPeriod === "custom") {
+    const from = $("#stats-from").value ? new Date($("#stats-from").value) : new Date(Date.now() - 7 * 86400000);
+    const to = $("#stats-to").value ? new Date($("#stats-to").value) : new Date();
+    p.set("from", Math.floor(from.getTime() / 1000));
+    p.set("to", Math.floor(to.getTime() / 1000));
+  } else {
+    p.set("days", { "24h": 1, "7d": 7, "30d": 30 }[statsPeriod] || 7);
+  }
+  if (statsFilter) p.set("client", statsFilter);
+  return p.toString();
+}
+
+async function loadStats() {
+  if (statsBusy) return;
+  statsBusy = true;
+  try {
+    statsData = await api("GET", "/api/stats?" + statsQuery());
+    renderStats();
+  } catch (e) {
+    statsData = null;
+    $("#stats-body").innerHTML =
+      '<div class="muted" style="padding:16px 0;text-align:center">Не удалось загрузить статистику: ' +
+      esc(e.message) + "</div>";
+  } finally {
+    statsBusy = false;
+  }
+}
+
+function renderStatsChip() {
+  const row = $("#stats-filter-row");
+  if (!statsFilter) { row.style.display = "none"; row.innerHTML = ""; return; }
+  row.style.display = "";
+  row.innerHTML =
+    '<span class="chip">Клиент: <b>' + esc(statsFilter) +
+    '</b><button title="Сбросить фильтр" onclick="setStatsFilter(\'\')">×</button></span>';
+}
+
+function setStatsFilter(name) {
+  statsFilter = name || "";
+  renderStatsChip();
+  loadStats();
+}
+
+// Jump from the clients table to this client's statistics, keeping the
+// currently selected period and scope.
+function openStatsFor(name) {
+  statsFilter = name;
+  renderStatsChip();
+  activateMainTab("tab-stats");
+}
+
+function renderChart(series, gran) {
+  const el = $("#stats-chart");
+  if (!series || !series.length) {
+    el.innerHTML = '<div class="muted" style="padding:8px 0">Нет данных за выбранный срок.</div>';
+    return;
+  }
+  const W = 1000, H = 200, padL = 6, padR = 6, padT = 8, padB = 22;
+  const n = series.length;
+  const max = Math.max(1, ...series.map(s => (s.rx || 0) + (s.tx || 0)));
+  const innerH = H - padT - padB;
+  const slot = (W - padL - padR) / n;
+  const bw = Math.max(1.5, Math.min(slot - 2, 60));
+  let bars = "", labels = "";
+  series.forEach((s, i) => {
+    const x = padL + i * slot + (slot - bw) / 2;
+    const hTotal = ((s.rx || 0) + (s.tx || 0)) / max * innerH;
+    const hRx = (s.rx || 0) / max * innerH;
+    const hTx = Math.max(0, hTotal - hRx);
+    const y = padT + innerH;
+    // Tx (sent to the client) at the bottom, Rx stacked on top of it
+    if (hTx > 0) bars += '<rect x="' + x.toFixed(2) + '" y="' + (y - hTx).toFixed(2) +
+      '" width="' + bw.toFixed(2) + '" height="' + hTx.toFixed(2) + '" fill="#5b8cff"/>';
+    if (hRx > 0) bars += '<rect x="' + x.toFixed(2) + '" y="' + (y - hTotal).toFixed(2) +
+      '" width="' + bw.toFixed(2) + '" height="' + hRx.toFixed(2) + '" fill="#34c77b"/>';
+  });
+  const want = Math.min(5, n);
+  const seen = new Set();
+  for (let i = 0; i < want; i++) {
+    const idx = want === 1 ? 0 : Math.round(i * (n - 1) / (want - 1));
+    if (seen.has(idx)) continue;
+    seen.add(idx);
+    const cx = padL + idx * slot + slot / 2;
+    // Edge labels are anchored inward so they never overflow the chart box.
+    const anchor = n === 1 ? "middle" : idx === 0 ? "start" : idx === n - 1 ? "end" : "middle";
+    labels += '<text class="chart-axis" x="' + cx.toFixed(2) + '" y="' + (H - 6) +
+      '" text-anchor="' + anchor + '">' + esc(fmtBucket(series[idx].ts, gran)) + "</text>";
+  }
+  el.innerHTML =
+    '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Трафик по интервалам">' +
+    '<line x1="' + padL + '" y1="' + padT + '" x2="' + (W - padR) + '" y2="' + padT +
+    '" stroke="#262b38" stroke-width="1"/>' +
+    '<line x1="' + padL + '" y1="' + (padT + innerH) + '" x2="' + (W - padR) + '" y2="' + (padT + innerH) +
+    '" stroke="#262b38" stroke-width="1"/>' +
+    bars + labels + "</svg>" +
+    '<div class="chart-legend"><span><i class="rx"></i>Rx — принято от клиентов</span>' +
+    '<span><i class="tx"></i>Tx — отправлено клиентам</span></div>' +
+    '<div class="st-sub" style="margin-top:4px">максимум: ' + hb(max) + " за интервал</div>";
+}
+
+function statName(c) {
+  return c.name || ((c.public_key || "?").slice(0, 8) + "…");
+}
+
+function renderStats() {
+  const d = statsData;
+  if (!d) return;
+  const t = d.totals || {};
+  const rows = d.clients || [];
+  const maxTraffic = Math.max(1, ...rows.map(r => (r.rx || 0) + (r.tx || 0)));
+
+  let html = "";
+  html += '<div class="stat-summary">' +
+    '<div><div class="val">' + (t.clients || 0) + '</div><div class="cap">клиентов</div></div>' +
+    '<div><div class="val">' + hb((t.rx || 0) + (t.tx || 0)) + '</div><div class="cap">трафик</div></div>' +
+    '<div><div class="val">' + hb(t.tx || 0) + '</div><div class="cap">отправлено (Tx)</div></div>' +
+    '<div><div class="val">' + fmtDur(t.online_sec) + '</div><div class="cap">время онлайн</div></div>' +
+    '<div><div class="val">' + (t.sessions || 0) + '</div><div class="cap">подключений</div></div>' +
+    "</div>";
+
+  html += '<p class="stat-note">Период: ' + fmtTs(d.from) + " — " + fmtTs(d.to) +
+    " · интервал опроса " + d.interval + " с · глубина хранения " + d.retention_days + " дней" +
+    (d.merged ? " · серверы: " + esc((d.servers || []).join(", ")) : "") + "</p>";
+
+  const cov = d.coverage || {};
+  if (cov.first_sample && cov.first_sample > d.from + 3600) {
+    html += '<p class="stat-warn">Данные доступны только с ' + fmtTs(cov.first_sample) +
+      " — до этого момента статистика не собиралась.</p>";
+  }
+  if (d.truncated) {
+    html += '<p class="stat-warn">Запрошенный срок длиннее ' + d.retention_days +
+      " дней — показаны последние " + d.retention_days + " дней.</p>";
+  }
+  const ev = d.events || {};
+  if (ev.reboots) {
+    html += '<p class="stat-note">Перезагрузок сервера за период: <b>' + ev.reboots + "</b>" +
+      (ev.last_reboot ? " (последняя " + fmtTs(ev.last_reboot) + ")" : "") +
+      ". Счётчики AWG при перезагрузке обнуляются — трафик восстановлен по дельтам и сохранён в базе.</p>";
+  }
+  for (const e of (d.errors || [])) {
+    html += '<p class="stat-warn">Узел «' + esc(e.server) + "»: " + esc(e.detail) + "</p>";
+  }
+
+  html += '<div id="stats-chart"></div>';
+  html += '<div class="table-scroll" style="margin-top:16px"><table><thead><tr>' +
+    "<th>Клиент</th><th>Трафик за период</th><th>Онлайн</th><th>Подключений</th><th>Всего с начала</th>" +
+    "</tr></thead><tbody>";
+  for (const c of rows) {
+    const traffic = (c.rx || 0) + (c.tx || 0);
+    html += "<tr>" +
+      "<td><strong>" + esc(statName(c)) + "</strong>" +
+        (c.ipv4 ? ' <span class="mono muted">' + esc(c.ipv4) + "</span>" : "") +
+        (c.enabled ? "" : ' <span class="badge dis">выкл</span>') +
+        (c.servers && c.servers.length > 1
+          ? '<br><span class="st-sub">' + esc(c.servers.join(" · ")) + "</span>" : "") +
+        (c.resets ? '<br><span class="st-sub">сбросов счётчика: ' + c.resets + "</span>" : "") +
+        "</td>" +
+      '<td class="mono">' + esc(c.rx_h) + " / " + esc(c.tx_h) +
+        '<div class="traffic-bar"><i style="width:' +
+          (traffic / maxTraffic * 100).toFixed(1) + '%"></i></div></td>' +
+      "<td>" + fmtDur(c.online_sec) + "</td>" +
+      "<td>" + (c.sessions || 0) + "</td>" +
+      '<td class="mono muted">' + esc(c.total_h) + "</td>" +
+      "</tr>";
+  }
+  if (!rows.length) {
+    html += '<tr><td colspan="5" class="muted" style="text-align:center;padding:16px 0">' +
+      (statsFilter ? "Нет данных по клиенту «" + esc(statsFilter) + "» за выбранный срок."
+                   : "Нет данных за выбранный срок.") + "</td></tr>";
+  }
+  html += "</tbody></table></div>";
+  $("#stats-body").innerHTML = html;
+  renderChart(d.series, d.granularity);
+}
+
+function exportStatsCSV() {
+  if (!statsData) { toast("Сначала загрузите статистику", true); return; }
+  const head = ["Клиент", "IPv4", "Rx, байт", "Tx, байт", "Всего с начала, байт",
+                "Онлайн, ч", "Подключений", "Сбросов счётчика", "Серверы"];
+  const rows = (statsData.clients || []).map(c => [
+    statName(c), c.ipv4 || "", c.rx || 0, c.tx || 0,
+    (c.total_rx || 0) + (c.total_tx || 0),
+    ((c.online_sec || 0) / 3600).toFixed(2), c.sessions || 0, c.resets || 0,
+    (c.servers || []).join(" + "),
+  ]);
+  const esc2 = (v) => '"' + String(v).replace(/"/g, '""') + '"';
+  const csv = "﻿" + [head].concat(rows).map(r => r.map(esc2).join(";")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "awg-stats-" + new Date().toISOString().slice(0, 10) + ".csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+$("#stats-scope").addEventListener("change", (e) => { statsScope = e.target.value; loadStats(); });
+$("#stats-period").addEventListener("change", (e) => {
+  statsPeriod = e.target.value;
+  const custom = statsPeriod === "custom";
+  $("#stats-from").disabled = !custom;
+  $("#stats-to").disabled = !custom;
+  loadStats();
+});
+$("#stats-from").addEventListener("change", loadStats);
+$("#stats-to").addEventListener("change", loadStats);
+$("#stats-refresh").addEventListener("click", loadStats);
+$("#stats-csv").addEventListener("click", exportStatsCSV);
+
+// Refresh stats only while the tab is open and the window is visible.
+setInterval(() => {
+  if (!$("#tab-stats").classList.contains("active")) return;
+  if (document.visibilityState !== "visible") return;
+  loadStats();
+}, 60000);
+
+// ----------------------------------------------------------------------
 // Panel self-update (GitHub Releases)
 // ----------------------------------------------------------------------
 
@@ -1044,6 +1384,9 @@ loadServers().then(() => {
   loadUpdateStatus();
   pingCurrent();
   refresh();
+  let savedTab = "";
+  try { savedTab = localStorage.getItem("awg.tab") || ""; } catch (e) {}
+  if (savedTab === "tab-stats") showTab($("#main-scope"), "tab-stats");
 });
 setInterval(() => {
   pingCurrent();

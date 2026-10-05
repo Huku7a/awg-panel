@@ -103,7 +103,7 @@ write_result "running" "upgrade started"
 python3 - "${MANIFEST}" <<'PYEOF'
 import sys
 blocks = ("venv/", ".git/", ".updates/", ".bak/", "dist/", ".github/", "__pycache__/")
-usr = {"state.json", "servers.json"}
+usr = {"state.json", "servers.json", "stats.db", "stats.db-wal", "stats.db-shm"}
 bad = []
 for raw in open(sys.argv[1]):
     f = raw.strip()
